@@ -34,10 +34,24 @@ func main() {
 		log.Printf("WARNING: ALLOWLIST is empty; nobody can sign in via OAuth")
 	}
 
+	jwtSecret := os.Getenv("JWT_SECRET")
+	devToken := os.Getenv("DEV_TOKEN")
+	if jwtSecret == "" || jwtSecret == "please-change-this-secret-in-production" ||
+		jwtSecret == "kotobalog-dev-secret-key" || jwtSecret == "kotobalog-default-dev-secret-change-me" ||
+		len(jwtSecret) < 32 {
+		if devToken == "" {
+			log.Fatalf("FATAL: JWT_SECRET must be set to a strong secret of at least 32 characters")
+		}
+		log.Printf("WARNING: using insecure JWT_SECRET in DEV_TOKEN mode")
+		if jwtSecret == "" {
+			jwtSecret = "kotobalog-dev-secret-key"
+		}
+	}
+
 	cfg := api.Config{
-		JWTSecret:          getenv("JWT_SECRET", "kotobalog-dev-secret-key"),
+		JWTSecret:          jwtSecret,
 		Allowlist:          allowlist,
-		DevToken:           os.Getenv("DEV_TOKEN"),
+		DevToken:           devToken,
 		AudioDir:           audioDir,
 		StaticDir:          staticDir,
 		BaseURL:            getenv("BASE_URL", "http://localhost:"+port),
