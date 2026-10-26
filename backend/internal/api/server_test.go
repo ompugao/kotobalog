@@ -202,4 +202,13 @@ func TestOAuthStateCSRFAndOpenRedirectProtection(t *testing.T) {
 	if gotLoc := cbRec.Header().Get("Location"); gotLoc != "/?error=invalid_state" {
 		t.Fatalf("expected redirect to /?error=invalid_state, got %q", gotLoc)
 	}
+
+	// 3. Prevent account takeover if a different GitHub ID claims an already-bound identity
+	origID, err := srv.upsertOAuthUser("github", "1001", "github:ompugao", "papa@example.com", "パパ", "")
+	if err != nil || origID == "" {
+		t.Fatalf("expected initial upsert to succeed, got %v", err)
+	}
+	if _, err := srv.upsertOAuthUser("github", "9999", "github:ompugao", "impersonator@example.com", "偽物", ""); err == nil {
+		t.Fatalf("expected error when a different github_id claims an existing bound identity")
+	}
 }

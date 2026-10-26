@@ -273,12 +273,16 @@ func (s *Server) handleOAuthCallback(w http.ResponseWriter, r *http.Request) {
 		}
 		defer resp.Body.Close()
 		var info struct {
-			ID      string `json:"id"`
-			Email   string `json:"email"`
-			Name    string `json:"name"`
-			Picture string `json:"picture"`
+			ID            string `json:"id"`
+			Email         string `json:"email"`
+			VerifiedEmail bool   `json:"verified_email"`
+			Name          string `json:"name"`
+			Picture       string `json:"picture"`
 		}
-		_ = json.NewDecoder(resp.Body).Decode(&info)
+		if err := json.NewDecoder(resp.Body).Decode(&info); err != nil || info.ID == "" || info.Email == "" || !info.VerifiedEmail {
+			redirectWithQuery(w, r, stateRedirect, map[string]string{"error": "email_not_verified"})
+			return
+		}
 		extID = info.ID
 		email = strings.ToLower(strings.TrimSpace(info.Email))
 		identity = "google:" + email
@@ -301,7 +305,10 @@ func (s *Server) handleOAuthCallback(w http.ResponseWriter, r *http.Request) {
 			Email     string `json:"email"`
 			AvatarURL string `json:"avatar_url"`
 		}
-		_ = json.NewDecoder(resp.Body).Decode(&info)
+		if err := json.NewDecoder(resp.Body).Decode(&info); err != nil || info.ID == 0 || info.Login == "" {
+			redirectWithQuery(w, r, stateRedirect, map[string]string{"error": "userinfo_failed"})
+			return
+		}
 		extID = fmt.Sprintf("%d", info.ID)
 		login := strings.ToLower(strings.TrimSpace(info.Login))
 		identity = "github:" + login
@@ -358,14 +365,23 @@ func (s *Server) upsertOAuthUser(provider, extID, identity, email, name, avatar 
 	}
 
 	var id string
-	err := s.db.QueryRow(fmt.Sprintf(`SELECT id FROM users WHERE %s = ? OR identity = ?`, col), extID, identity).Scan(&id)
+	err := s.db.QueryRow(fmt.Sprintf(`SELECT id FROM users WHERE %s = ?`, col), extID).Scan(&id)
 	if err == sql.ErrNoRows {
-		id = uuid.NewString()
-		_, err = s.db.Exec(
-			fmt.Sprintf(`INSERT INTO users (id, identity, email, display_name, avatar_url, %s, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)`, col),
-			id, identity, email, name, avatar, extID, time.Now().UTC(),
-		)
-		return id, err
+		var existingExtID string
+		err = s.db.QueryRow(fmt.Sprintf(`SELECT id, COALESCE(%s, '') FROM users WHERE identity = ?`, col), identity).Scan(&id, &existingExtID)
+		if err == sql.ErrNoRows {
+			id = uuid.NewString()
+			_, err = s.db.Exec(
+				fmt.Sprintf(`INSERT INTO users (id, identity, email, display_name, avatar_url, %s, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)`, col),
+				id, identity, email, name, avatar, extID, time.Now().UTC(),
+			)
+			return id, err
+		} else if err != nil {
+			return "", err
+		}
+		if existingExtID != "" && existingExtID != extID {
+			return "", fmt.Errorf("identity %s is already bound to a different %s account", identity, provider)
+		}
 	} else if err != nil {
 		return "", err
 	}
