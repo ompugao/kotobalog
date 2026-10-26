@@ -95,48 +95,17 @@ class ApiClient {
         .toString();
   }
 
-  Future<({String token, User user})> register({
-    required String email,
-    required String password,
-    required String displayName,
-  }) async {
-    final res = await http.post(
-      _uri('/api/auth/register'),
-      headers: _headers(),
-      body: jsonEncode({
-        'email': email,
-        'password': password,
-        'display_name': displayName,
-      }),
-    );
-    final data = _decodeObj(res);
-    return (
-      token: data['token'] as String,
-      user: User.fromJson(data['user'] as Map<String, dynamic>),
-    );
-  }
-
-  Future<({String token, User user})> login({
-    required String email,
-    required String password,
-  }) async {
-    final res = await http.post(
-      _uri('/api/auth/login'),
-      headers: _headers(),
-      body: jsonEncode({
-        'email': email,
-        'password': password,
-      }),
-    );
-    final data = _decodeObj(res);
-    return (
-      token: data['token'] as String,
-      user: User.fromJson(data['user'] as Map<String, dynamic>),
-    );
-  }
-
   Future<User> getMe() async {
     final res = await http.get(_uri('/api/auth/me'), headers: _headers());
+    return User.fromJson(_decodeObj(res));
+  }
+
+  Future<User> updateDisplayName(String displayName) async {
+    final res = await http.put(
+      _uri('/api/auth/me'),
+      headers: _headers(),
+      body: jsonEncode({'display_name': displayName}),
+    );
     return User.fromJson(_decodeObj(res));
   }
 
@@ -182,24 +151,6 @@ class ApiClient {
         'theme_color': themeColor,
         'icon_emoji': iconEmoji,
       }),
-    );
-    return Notebook.fromJson(_decodeObj(res));
-  }
-
-  Future<String> createInviteCode(String notebookId) async {
-    final res = await http.post(
-      _uri('/api/notebooks/$notebookId/invites'),
-      headers: _headers(),
-    );
-    final data = _decodeObj(res);
-    return data['code'] as String;
-  }
-
-  Future<Notebook> joinNotebook(String code) async {
-    final res = await http.post(
-      _uri('/api/notebooks/join'),
-      headers: _headers(),
-      body: jsonEncode({'code': code}),
     );
     return Notebook.fromJson(_decodeObj(res));
   }

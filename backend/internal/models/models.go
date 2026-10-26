@@ -4,6 +4,7 @@ import "time"
 
 type User struct {
 	ID          string    `json:"id"`
+	Identity    string    `json:"identity"`
 	Email       string    `json:"email"`
 	DisplayName string    `json:"display_name"`
 	AvatarURL   string    `json:"avatar_url"`
@@ -12,6 +13,7 @@ type User struct {
 
 type NotebookMember struct {
 	UserID      string    `json:"user_id"`
+	Identity    string    `json:"identity"`
 	DisplayName string    `json:"display_name"`
 	Email       string    `json:"email"`
 	AvatarURL   string    `json:"avatar_url"`
@@ -27,13 +29,6 @@ type Notebook struct {
 	IconEmoji  string           `json:"icon_emoji"`
 	CreatedAt  time.Time        `json:"created_at"`
 	Members    []NotebookMember `json:"members"`
-}
-
-type NotebookInvite struct {
-	Code       string    `json:"code"`
-	NotebookID string    `json:"notebook_id"`
-	CreatedBy  string    `json:"created_by"`
-	ExpiresAt  time.Time `json:"expires_at"`
 }
 
 type WordEntry struct {

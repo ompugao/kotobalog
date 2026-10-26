@@ -87,7 +87,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
                       ),
                       if (nb != null)
                         Text(
-                          '現在 ${nb.ageLabelAt(DateTime.now())} • 家族 ${nb.members.length}人で共有中',
+                          '現在 ${nb.ageLabelAt(DateTime.now())}',
                           style: TextStyle(
                             fontSize: 11,
                             color: Colors.brown.shade700,
@@ -102,26 +102,57 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
         ),
         actions: [
           IconButton(
-            tooltip: 'ことば帳の切り替え・家族共有',
+            tooltip: 'ことば帳の切り替え',
             onPressed: _openNotebookSwitcher,
-            icon: const Icon(Icons.family_restroom),
+            icon: const Icon(Icons.menu_book_outlined),
           ),
           PopupMenuButton<String>(
             tooltip: 'アカウントメニュー',
             onSelected: (value) {
-              if (value == 'logout') {
+              if (value == 'rename') {
+                showDialog(
+                  context: context,
+                  builder: (_) => EditDisplayNameDialog(
+                    currentName: appState.user?.displayName ?? '',
+                  ),
+                );
+              } else if (value == 'logout') {
                 ref.read(appProvider.notifier).logout();
               }
             },
             itemBuilder: (_) => [
               PopupMenuItem(
                 enabled: false,
-                child: Text(
-                  '${appState.user?.displayName ?? ''} (${appState.user?.email ?? ''})',
-                  style: const TextStyle(fontSize: 12),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      appState.user?.displayName ?? '',
+                      style: const TextStyle(
+                        fontSize: 13,
+                        fontWeight: FontWeight.bold,
+                      ),
+                    ),
+                    Text(
+                      appState.user?.identity.isNotEmpty == true
+                          ? appState.user!.identity
+                          : (appState.user?.email ?? ''),
+                      style: const TextStyle(fontSize: 11),
+                    ),
+                  ],
                 ),
               ),
               const PopupMenuDivider(),
+              const PopupMenuItem(
+                value: 'rename',
+                child: Row(
+                  children: [
+                    Icon(Icons.badge_outlined, size: 18),
+                    SizedBox(width: 8),
+                    Text('表示名を変更（パパ・ママ等）'),
+                  ],
+                ),
+              ),
               const PopupMenuItem(
                 value: 'logout',
                 child: Row(
@@ -163,7 +194,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
                           ),
                           const SizedBox(height: 8),
                           Text(
-                            'お子さまごとに「ことば帳」を作成して、家族みんなで言葉や声を記録・共有できます。複数の兄弟姉妹がいる場合も上部のバーからいつでも切り替えられます。',
+                            'お子さまごとに「ことば帳」を作成して、ALLOWLISTで許可された家族みんなで言葉や声を記録・共有できます。複数の兄弟姉妹がいる場合も上部のバーからいつでも切り替えられます。',
                             textAlign: TextAlign.center,
                             style: TextStyle(
                               fontSize: 13,
@@ -180,17 +211,6 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
                             },
                             icon: const Icon(Icons.add),
                             label: const Text('新しいことば帳をつくる'),
-                          ),
-                          const SizedBox(height: 10),
-                          OutlinedButton.icon(
-                            onPressed: () {
-                              showDialog(
-                                context: context,
-                                builder: (_) => const JoinNotebookDialog(),
-                              );
-                            },
-                            icon: const Icon(Icons.group_add_outlined),
-                            label: const Text('家族の招待コードで参加する'),
                           ),
                         ],
                       ),

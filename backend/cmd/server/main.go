@@ -17,7 +17,7 @@ func getenv(key, fallback string) string {
 }
 
 func main() {
-	port := getenv("PORT", "8080")
+	port := getenv("PORT", "18081")
 	dbPath := getenv("DB_PATH", "./data/kotobalog.db")
 	audioDir := getenv("AUDIO_DIR", "./data/audio")
 	staticDir := getenv("STATIC_DIR", "./web_dist")
@@ -28,8 +28,15 @@ func main() {
 	}
 	defer database.Close()
 
+	allowlist := os.Getenv("ALLOWLIST")
+	if allowlist == "" {
+		log.Printf("WARNING: ALLOWLIST is empty; nobody can sign in via OAuth")
+	}
+
 	cfg := api.Config{
 		JWTSecret:          getenv("JWT_SECRET", "kotobalog-dev-secret-key"),
+		Allowlist:          allowlist,
+		DevToken:           os.Getenv("DEV_TOKEN"),
 		AudioDir:           audioDir,
 		StaticDir:          staticDir,
 		BaseURL:            getenv("BASE_URL", "http://localhost:"+port),

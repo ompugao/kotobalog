@@ -12,15 +12,9 @@ class AuthScreen extends ConsumerStatefulWidget {
 }
 
 class _AuthScreenState extends ConsumerState<AuthScreen> {
-  bool _isLogin = true;
-  bool _isLoading = false;
   bool _showServerConfig = false;
-  String? _error;
-
-  final _emailCtrl = TextEditingController();
-  final _passwordCtrl = TextEditingController();
-  final _nameCtrl = TextEditingController();
   late final TextEditingController _serverCtrl;
+  final _tokenCtrl = TextEditingController();
 
   @override
   void initState() {
@@ -31,54 +25,16 @@ class _AuthScreenState extends ConsumerState<AuthScreen> {
 
   @override
   void dispose() {
-    _emailCtrl.dispose();
-    _passwordCtrl.dispose();
-    _nameCtrl.dispose();
     _serverCtrl.dispose();
+    _tokenCtrl.dispose();
     super.dispose();
-  }
-
-  Future<void> _submit() async {
-    setState(() {
-      _isLoading = true;
-      _error = null;
-    });
-
-    try {
-      final notifier = ref.read(appProvider.notifier);
-      if (_showServerConfig) {
-        await notifier.setServerUrl(_serverCtrl.text);
-      }
-
-      if (_isLogin) {
-        await notifier.login(
-          _emailCtrl.text.trim(),
-          _passwordCtrl.text,
-        );
-      } else {
-        await notifier.register(
-          _emailCtrl.text.trim(),
-          _passwordCtrl.text,
-          _nameCtrl.text.trim(),
-        );
-      }
-    } catch (e) {
-      if (mounted) {
-        setState(() {
-          _error = e.toString();
-        });
-      }
-    } finally {
-      if (mounted) {
-        setState(() {
-          _isLoading = false;
-        });
-      }
-    }
   }
 
   Future<void> _startOAuth(String provider) async {
     final notifier = ref.read(appProvider.notifier);
+    if (_showServerConfig) {
+      await notifier.setServerUrl(_serverCtrl.text);
+    }
     final redirect = kIsWeb ? Uri.base.origin : null;
     final url = notifier.api.oauthUrl(provider, redirectUri: redirect);
     final uri = Uri.parse(url);
@@ -131,29 +87,7 @@ class _AuthScreenState extends ConsumerState<AuthScreen> {
                         ),
                       ),
                       const SizedBox(height: 24),
-                      SegmentedButton<bool>(
-                        segments: const [
-                          ButtonSegment(
-                            value: true,
-                            label: Text('ログイン'),
-                            icon: Icon(Icons.login),
-                          ),
-                          ButtonSegment(
-                            value: false,
-                            label: Text('新規登録'),
-                            icon: Icon(Icons.person_add_alt_1),
-                          ),
-                        ],
-                        selected: {_isLogin},
-                        onSelectionChanged: (val) {
-                          setState(() {
-                            _isLogin = val.first;
-                            _error = null;
-                          });
-                        },
-                      ),
-                      const SizedBox(height: 20),
-                      if (_error != null) ...[
+                      if (appState.authError != null) ...[
                         Container(
                           padding: const EdgeInsets.all(12),
                           decoration: BoxDecoration(
@@ -162,7 +96,7 @@ class _AuthScreenState extends ConsumerState<AuthScreen> {
                             border: Border.all(color: Colors.red.shade200),
                           ),
                           child: Text(
-                            _error!,
+                            appState.authError!,
                             style: TextStyle(
                               color: Colors.red.shade800,
                               fontSize: 13,
@@ -171,79 +105,52 @@ class _AuthScreenState extends ConsumerState<AuthScreen> {
                         ),
                         const SizedBox(height: 16),
                       ],
-                      if (!_isLogin) ...[
-                        TextField(
-                          controller: _nameCtrl,
-                          decoration: const InputDecoration(
-                            labelText: 'あなたの表示名（例: ママ、パパ、おばあちゃん）',
-                            prefixIcon: Icon(Icons.badge_outlined),
-                            border: OutlineInputBorder(),
-                          ),
-                        ),
-                        const SizedBox(height: 14),
-                      ],
-                      TextField(
-                        controller: _emailCtrl,
-                        keyboardType: TextInputType.emailAddress,
-                        textInputAction: TextInputAction.next,
-                        decoration: const InputDecoration(
-                          labelText: 'メールアドレス',
-                          prefixIcon: Icon(Icons.email_outlined),
-                          border: OutlineInputBorder(),
-                        ),
-                      ),
-                      const SizedBox(height: 14),
-                      TextField(
-                        controller: _passwordCtrl,
-                        obscureText: true,
-                        onSubmitted: (_) => _submit(),
-                        decoration: const InputDecoration(
-                          labelText: 'パスワード (6文字以上)',
-                          prefixIcon: Icon(Icons.lock_outline),
-                          border: OutlineInputBorder(),
-                        ),
-                      ),
-                      const SizedBox(height: 20),
-                      FilledButton(
-                        onPressed: _isLoading ? null : _submit,
+                      FilledButton.icon(
+                        onPressed: () => _startOAuth('google'),
                         style: FilledButton.styleFrom(
                           padding: const EdgeInsets.symmetric(vertical: 15),
                           shape: RoundedRectangleBorder(
                             borderRadius: BorderRadius.circular(14),
                           ),
                         ),
-                        child: _isLoading
-                            ? const SizedBox(
-                                height: 20,
-                                width: 20,
-                                child: CircularProgressIndicator(
-                                  strokeWidth: 2,
-                                  color: Colors.white,
-                                ),
-                              )
-                            : Text(
-                                _isLogin ? 'ログインする' : 'アカウントを作成する',
-                                style: const TextStyle(
-                                  fontSize: 16,
-                                  fontWeight: FontWeight.bold,
-                                ),
-                              ),
-                      ),
-                      const SizedBox(height: 16),
-                      const Divider(),
-                      const SizedBox(height: 8),
-                      OutlinedButton.icon(
-                        onPressed: () => _startOAuth('google'),
                         icon: const Icon(Icons.account_circle_outlined),
-                        label: const Text('Googleでログイン'),
-                      ),
-                      const SizedBox(height: 8),
-                      OutlinedButton.icon(
-                        onPressed: () => _startOAuth('github'),
-                        icon: const Icon(Icons.code),
-                        label: const Text('GitHubでログイン'),
+                        label: const Text(
+                          'Googleでログイン',
+                          style: TextStyle(
+                            fontSize: 16,
+                            fontWeight: FontWeight.bold,
+                          ),
+                        ),
                       ),
                       const SizedBox(height: 12),
+                      FilledButton.tonalIcon(
+                        onPressed: () => _startOAuth('github'),
+                        style: FilledButton.styleFrom(
+                          padding: const EdgeInsets.symmetric(vertical: 15),
+                          shape: RoundedRectangleBorder(
+                            borderRadius: BorderRadius.circular(14),
+                          ),
+                        ),
+                        icon: const Icon(Icons.code),
+                        label: const Text(
+                          'GitHubでログイン',
+                          style: TextStyle(
+                            fontSize: 16,
+                            fontWeight: FontWeight.bold,
+                          ),
+                        ),
+                      ),
+                      const SizedBox(height: 16),
+                      Text(
+                        '※ サーバーの ALLOWLIST に登録された家族アカウントのみログインできます',
+                        textAlign: TextAlign.center,
+                        style: TextStyle(
+                          fontSize: 11,
+                          color: Colors.brown.shade500,
+                        ),
+                      ),
+                      const SizedBox(height: 12),
+                      const Divider(),
                       TextButton.icon(
                         onPressed: () {
                           setState(() {
@@ -264,7 +171,8 @@ class _AuthScreenState extends ConsumerState<AuthScreen> {
                               child: TextField(
                                 controller: _serverCtrl,
                                 decoration: const InputDecoration(
-                                  labelText: 'サーバーURL (例: http://192.168.1.50:8080)',
+                                  labelText:
+                                      'サーバーURL (例: https://kotobalog.example.com)',
                                   isDense: true,
                                   border: OutlineInputBorder(),
                                 ),
@@ -283,6 +191,32 @@ class _AuthScreenState extends ConsumerState<AuthScreen> {
                                 }
                               },
                               child: const Text('保存'),
+                            ),
+                          ],
+                        ),
+                        const SizedBox(height: 10),
+                        Row(
+                          children: [
+                            Expanded(
+                              child: TextField(
+                                controller: _tokenCtrl,
+                                decoration: const InputDecoration(
+                                  labelText: 'アクセストークン直接入力 (Android / 開発用)',
+                                  isDense: true,
+                                  border: OutlineInputBorder(),
+                                ),
+                              ),
+                            ),
+                            const SizedBox(width: 8),
+                            OutlinedButton(
+                              onPressed: () async {
+                                try {
+                                  await ref
+                                      .read(appProvider.notifier)
+                                      .loginWithToken(_tokenCtrl.text);
+                                } catch (_) {}
+                              },
+                              child: const Text('認証'),
                             ),
                           ],
                         ),

@@ -10,6 +10,7 @@ class AppState {
   final String serverUrl;
   final String? token;
   final User? user;
+  final String? authError;
   final List<Notebook> notebooks;
   final String? selectedNotebookId;
   final List<WordEntry> entries;
@@ -22,6 +23,7 @@ class AppState {
     required this.serverUrl,
     this.token,
     this.user,
+    this.authError,
     this.notebooks = const [],
     this.selectedNotebookId,
     this.entries = const [],
@@ -47,6 +49,8 @@ class AppState {
     bool clearToken = false,
     User? user,
     bool clearUser = false,
+    String? authError,
+    bool clearAuthError = false,
     List<Notebook>? notebooks,
     String? selectedNotebookId,
     List<WordEntry>? entries,
@@ -59,6 +63,7 @@ class AppState {
       serverUrl: serverUrl ?? this.serverUrl,
       token: clearToken ? null : (token ?? this.token),
       user: clearUser ? null : (user ?? this.user),
+      authError: clearAuthError ? null : (authError ?? this.authError),
       notebooks: notebooks ?? this.notebooks,
       selectedNotebookId: selectedNotebookId ?? this.selectedNotebookId,
       entries: entries ?? this.entries,
@@ -87,12 +92,22 @@ class AppNotifier extends Notifier<AppState> {
 
   Future<void> _initialize() async {
     final prefs = await SharedPreferences.getInstance();
-    final savedUrl = prefs.getString(_prefServerUrl) ?? ApiClient.defaultBaseUrl();
+    final savedUrl =
+        prefs.getString(_prefServerUrl) ?? ApiClient.defaultBaseUrl();
     String? savedToken = prefs.getString(_prefToken);
     final savedNotebookId = prefs.getString(_prefNotebookId);
+    String? oauthErrorMsg;
 
-    // Check URL query param ?token= (from OAuth redirect on Web)
     if (kIsWeb) {
+      final errCode = Uri.base.queryParameters['error'];
+      final errIdentity = Uri.base.queryParameters['identity'] ?? '';
+      if (errCode == 'not_allowed') {
+        oauthErrorMsg =
+            'このアカウント ($errIdentity) は ALLOWLIST に登録されていないためログインできません。';
+      } else if (errCode != null && errCode.isNotEmpty) {
+        oauthErrorMsg = 'OAuthログインに失敗しました ($errCode)';
+      }
+
       final urlToken = Uri.base.queryParameters['token'];
       if (urlToken != null && urlToken.isNotEmpty) {
         savedToken = urlToken;
@@ -104,39 +119,15 @@ class AppNotifier extends Notifier<AppState> {
       serverUrl: savedUrl,
       token: savedToken,
       selectedNotebookId: savedNotebookId,
+      authError: oauthErrorMsg,
     );
 
     final oauth = await api.getOAuthStatus();
     state = state.copyWith(oauthProviders: oauth);
 
     if (savedToken != null && savedToken.isNotEmpty) {
-      try {
-        final user = await api.getMe();
-        final notebooks = await api.listNotebooks();
-        String? activeNbId = savedNotebookId;
-        if (notebooks.isNotEmpty &&
-            (activeNbId == null || !notebooks.any((n) => n.id == activeNbId))) {
-          activeNbId = notebooks.first.id;
-        }
-        state = state.copyWith(
-          isInitializing: false,
-          user: user,
-          notebooks: notebooks,
-          selectedNotebookId: activeNbId,
-        );
-        if (activeNbId != null) {
-          await refreshEntries();
-        }
-        return;
-      } catch (_) {
-        await prefs.remove(_prefToken);
-        state = state.copyWith(
-          isInitializing: false,
-          clearToken: true,
-          clearUser: true,
-        );
-        return;
-      }
+      await loginWithToken(savedToken, isInitial: true);
+      return;
     }
 
     state = state.copyWith(isInitializing: false);
@@ -152,40 +143,52 @@ class AppNotifier extends Notifier<AppState> {
     state = state.copyWith(oauthProviders: oauth);
   }
 
-  Future<void> login(String email, String password) async {
-    final res = await api.login(email: email, password: password);
-    await _onAuthSuccess(res.token, res.user);
-  }
+  Future<void> loginWithToken(String token, {bool isInitial = false}) async {
+    final clean = token.trim();
+    if (clean.isEmpty) return;
 
-  Future<void> register(String email, String password, String displayName) async {
-    final res = await api.register(
-      email: email,
-      password: password,
-      displayName: displayName,
-    );
-    await _onAuthSuccess(res.token, res.user);
-  }
-
-  Future<void> _onAuthSuccess(String token, User user) async {
     final prefs = await SharedPreferences.getInstance();
-    await prefs.setString(_prefToken, token);
-    state = state.copyWith(token: token, user: user);
+    await prefs.setString(_prefToken, clean);
+    state = state.copyWith(token: clean, clearAuthError: true);
 
+    try {
+      final user = await api.getMe();
+      final notebooks = await api.listNotebooks();
+      String? activeNbId = state.selectedNotebookId;
+      if (notebooks.isNotEmpty &&
+          (activeNbId == null || !notebooks.any((n) => n.id == activeNbId))) {
+        activeNbId = notebooks.first.id;
+        await prefs.setString(_prefNotebookId, activeNbId);
+      }
+      state = state.copyWith(
+        isInitializing: false,
+        user: user,
+        notebooks: notebooks,
+        selectedNotebookId: activeNbId,
+      );
+      if (activeNbId != null) {
+        await refreshEntries();
+      }
+    } catch (e) {
+      await prefs.remove(_prefToken);
+      state = state.copyWith(
+        isInitializing: false,
+        clearToken: true,
+        clearUser: true,
+        authError: isInitial ? null : e.toString(),
+      );
+      if (!isInitial) rethrow;
+    }
+  }
+
+  Future<void> updateDisplayName(String displayName) async {
+    final updatedUser = await api.updateDisplayName(displayName);
     final notebooks = await api.listNotebooks();
-    String? activeNbId = state.selectedNotebookId;
-    if (notebooks.isNotEmpty &&
-        (activeNbId == null || !notebooks.any((n) => n.id == activeNbId))) {
-      activeNbId = notebooks.first.id;
-      await prefs.setString(_prefNotebookId, activeNbId);
-    }
     state = state.copyWith(
+      user: updatedUser,
       notebooks: notebooks,
-      selectedNotebookId: activeNbId,
-      entries: const [],
     );
-    if (activeNbId != null) {
-      await refreshEntries();
-    }
+    await refreshEntries();
   }
 
   Future<void> logout() async {
@@ -248,19 +251,6 @@ class AppNotifier extends Notifier<AppState> {
     );
     final updated = state.notebooks.map((n) => n.id == id ? nb : n).toList();
     state = state.copyWith(notebooks: updated);
-    return nb;
-  }
-
-  Future<Notebook> joinNotebook(String code) async {
-    final nb = await api.joinNotebook(code);
-    final notebooks = await api.listNotebooks();
-    final prefs = await SharedPreferences.getInstance();
-    await prefs.setString(_prefNotebookId, nb.id);
-    state = state.copyWith(
-      notebooks: notebooks,
-      selectedNotebookId: nb.id,
-    );
-    await refreshEntries();
     return nb;
   }
 

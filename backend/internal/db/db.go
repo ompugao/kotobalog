@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	_ "modernc.org/sqlite"
 )
@@ -45,12 +46,13 @@ func migrate(database *sql.DB) error {
 	schema := `
 	CREATE TABLE IF NOT EXISTS users (
 		id TEXT PRIMARY KEY,
-		email TEXT UNIQUE NOT NULL,
+		identity TEXT NOT NULL DEFAULT '',
+		email TEXT NOT NULL DEFAULT '',
 		password_hash TEXT NOT NULL DEFAULT '',
 		display_name TEXT NOT NULL,
 		avatar_url TEXT NOT NULL DEFAULT '',
-		google_id TEXT UNIQUE,
-		github_id TEXT UNIQUE,
+		google_id TEXT,
+		github_id TEXT,
 		created_at DATETIME NOT NULL
 	);
 
@@ -61,25 +63,6 @@ func migrate(database *sql.DB) error {
 		theme_color TEXT NOT NULL DEFAULT '#FF8A65',
 		icon_emoji TEXT NOT NULL DEFAULT '👶',
 		created_at DATETIME NOT NULL
-	);
-
-	CREATE TABLE IF NOT EXISTS notebook_members (
-		notebook_id TEXT NOT NULL,
-		user_id TEXT NOT NULL,
-		role TEXT NOT NULL DEFAULT 'member',
-		joined_at DATETIME NOT NULL,
-		PRIMARY KEY (notebook_id, user_id),
-		FOREIGN KEY (notebook_id) REFERENCES notebooks(id) ON DELETE CASCADE,
-		FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
-	);
-
-	CREATE TABLE IF NOT EXISTS notebook_invites (
-		code TEXT PRIMARY KEY,
-		notebook_id TEXT NOT NULL,
-		created_by TEXT NOT NULL,
-		expires_at DATETIME NOT NULL,
-		FOREIGN KEY (notebook_id) REFERENCES notebooks(id) ON DELETE CASCADE,
-		FOREIGN KEY (created_by) REFERENCES users(id) ON DELETE CASCADE
 	);
 
 	CREATE TABLE IF NOT EXISTS word_entries (
@@ -99,6 +82,14 @@ func migrate(database *sql.DB) error {
 
 	CREATE INDEX IF NOT EXISTS idx_word_entries_notebook_spoken ON word_entries(notebook_id, spoken_at DESC);
 	`
-	_, err := database.Exec(schema)
-	return err
+	if _, err := database.Exec(schema); err != nil {
+		return err
+	}
+
+	// Ensure identity column exists on older DBs
+	_, err := database.Exec(`ALTER TABLE users ADD COLUMN identity TEXT NOT NULL DEFAULT ''`)
+	if err != nil && !strings.Contains(err.Error(), "duplicate column") {
+		return err
+	}
+	return nil
 }

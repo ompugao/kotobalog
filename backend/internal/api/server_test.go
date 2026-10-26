@@ -12,7 +12,7 @@ import (
 	"github.com/ompugao/kotobalog/backend/internal/models"
 )
 
-func setupTestServer(t *testing.T) *Server {
+func setupTestServer(t *testing.T, allowlist string) *Server {
 	t.Helper()
 	database, err := db.Open(":memory:")
 	if err != nil {
@@ -22,6 +22,7 @@ func setupTestServer(t *testing.T) *Server {
 
 	srv, err := NewServer(database, Config{
 		JWTSecret: "test-secret",
+		Allowlist: allowlist,
 		AudioDir:  t.TempDir(),
 	})
 	if err != nil {
@@ -48,35 +49,36 @@ func doJSON(t *testing.T, srv http.Handler, method, path, token string, body any
 	return rec
 }
 
-func TestNotebookAndWordEntryFlow(t *testing.T) {
-	srv := setupTestServer(t)
+func TestAllowlistAndSharedNotebooksFlow(t *testing.T) {
+	srv := setupTestServer(t, "github:ompugao, google:mama@example.com")
 
-	// 1. Register Mama
-	rec := doJSON(t, srv, http.MethodPost, "/api/auth/register", "", map[string]string{
-		"email":        "mama@example.com",
-		"password":     "password123",
-		"display_name": "ママ",
-	})
-	if rec.Code != http.StatusCreated {
-		t.Fatalf("expected 201 on register mama, got %d: %s", rec.Code, rec.Body.String())
+	// 1. Upsert allowlisted Papa (github:ompugao) & Mama (google:mama@example.com), and unallowed Stranger
+	papaID, err := srv.upsertOAuthUser("github", "1001", "github:ompugao", "papa@example.com", "パパ", "")
+	if err != nil {
+		t.Fatalf("upsert papa: %v", err)
 	}
-	var mamaAuth authResponse
-	_ = json.NewDecoder(rec.Body).Decode(&mamaAuth)
+	papaToken, _ := srv.generateToken(papaID, "github:ompugao")
 
-	// 2. Register Papa
-	rec = doJSON(t, srv, http.MethodPost, "/api/auth/register", "", map[string]string{
-		"email":        "papa@example.com",
-		"password":     "password123",
-		"display_name": "パパ",
-	})
-	if rec.Code != http.StatusCreated {
-		t.Fatalf("expected 201 on register papa, got %d", rec.Code)
+	mamaID, err := srv.upsertOAuthUser("google", "2002", "google:mama@example.com", "mama@example.com", "ママ", "")
+	if err != nil {
+		t.Fatalf("upsert mama: %v", err)
 	}
-	var papaAuth authResponse
-	_ = json.NewDecoder(rec.Body).Decode(&papaAuth)
+	mamaToken, _ := srv.generateToken(mamaID, "google:mama@example.com")
+
+	strangerID, err := srv.upsertOAuthUser("github", "9999", "github:stranger", "stranger@example.com", "他人", "")
+	if err != nil {
+		t.Fatalf("upsert stranger: %v", err)
+	}
+	strangerToken, _ := srv.generateToken(strangerID, "github:stranger")
+
+	// 2. Stranger is rejected by requireAuth because not in ALLOWLIST
+	rec := doJSON(t, srv, http.MethodGet, "/api/notebooks", strangerToken, nil)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("expected 403 for unallowed user, got %d", rec.Code)
+	}
 
 	// 3. Mama creates a notebook ("はるくんのことば帳")
-	rec = doJSON(t, srv, http.MethodPost, "/api/notebooks", mamaAuth.Token, map[string]string{
+	rec = doJSON(t, srv, http.MethodPost, "/api/notebooks", mamaToken, map[string]string{
 		"child_name":  "はるくん",
 		"birth_date":  "2025-05-10",
 		"theme_color": "#4DB6AC",
@@ -87,33 +89,18 @@ func TestNotebookAndWordEntryFlow(t *testing.T) {
 	}
 	var nb models.Notebook
 	_ = json.NewDecoder(rec.Body).Decode(&nb)
-	if nb.ChildName != "はるくん" || len(nb.Members) != 1 {
-		t.Fatalf("unexpected notebook: %+v", nb)
+	if nb.ChildName != "はるくん" || len(nb.Members) != 2 {
+		t.Fatalf("expected notebook with 2 allowlisted family members, got: %+v", nb)
 	}
 
-	// 4. Mama creates an invite code and Papa joins
-	rec = doJSON(t, srv, http.MethodPost, "/api/notebooks/"+nb.ID+"/invites", mamaAuth.Token, nil)
-	if rec.Code != http.StatusCreated {
-		t.Fatalf("expected 201 on create invite, got %d", rec.Code)
-	}
-	var inv models.NotebookInvite
-	_ = json.NewDecoder(rec.Body).Decode(&inv)
-
-	rec = doJSON(t, srv, http.MethodPost, "/api/notebooks/join", papaAuth.Token, map[string]string{
-		"code": inv.Code,
-	})
+	// 4. Papa automatically sees the notebook without invite code and records a word with audio
+	rec = doJSON(t, srv, http.MethodGet, "/api/notebooks", papaToken, nil)
 	if rec.Code != http.StatusOK {
-		t.Fatalf("expected 200 on papa join, got %d: %s", rec.Code, rec.Body.String())
-	}
-	var joinedNb models.Notebook
-	_ = json.NewDecoder(rec.Body).Decode(&joinedNb)
-	if len(joinedNb.Members) != 2 {
-		t.Fatalf("expected 2 members in notebook, got %d", len(joinedNb.Members))
+		t.Fatalf("expected 200 on papa list notebooks, got %d", rec.Code)
 	}
 
-	// 5. Papa records a word with audio
 	dummyWav := []byte("RIFFxxxxWAVEfmt ")
-	rec = doJSON(t, srv, http.MethodPost, "/api/notebooks/"+nb.ID+"/entries", papaAuth.Token, map[string]any{
+	rec = doJSON(t, srv, http.MethodPost, "/api/notebooks/"+nb.ID+"/entries", papaToken, map[string]any{
 		"word":              "ぶーぶー",
 		"meaning":           "パトカーや救急車を見つけたときに指差して言った",
 		"spoken_at":         "2026-10-26T10:30:00Z",
@@ -130,8 +117,8 @@ func TestNotebookAndWordEntryFlow(t *testing.T) {
 		t.Fatalf("unexpected entry: %+v", createdEntry)
 	}
 
-	// 6. Mama searches entries and fetches audio
-	rec = doJSON(t, srv, http.MethodGet, "/api/notebooks/"+nb.ID+"/entries?q=救急車", mamaAuth.Token, nil)
+	// 5. Mama searches entries and fetches audio
+	rec = doJSON(t, srv, http.MethodGet, "/api/notebooks/"+nb.ID+"/entries?q=救急車", mamaToken, nil)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("expected 200 on list entries, got %d", rec.Code)
 	}
@@ -141,8 +128,8 @@ func TestNotebookAndWordEntryFlow(t *testing.T) {
 		t.Fatalf("unexpected search results: %+v", entries)
 	}
 
-	// 7. Fetch audio using ?token= query param
-	audioReq := httptest.NewRequest(http.MethodGet, "/api/notebooks/"+nb.ID+"/entries/"+createdEntry.ID+"/audio?token="+mamaAuth.Token, nil)
+	// 6. Fetch audio using ?token= query param
+	audioReq := httptest.NewRequest(http.MethodGet, "/api/notebooks/"+nb.ID+"/entries/"+createdEntry.ID+"/audio?token="+mamaToken, nil)
 	audioRec := httptest.NewRecorder()
 	srv.ServeHTTP(audioRec, audioReq)
 	if audioRec.Code != http.StatusOK || !bytes.Equal(audioRec.Body.Bytes(), dummyWav) {

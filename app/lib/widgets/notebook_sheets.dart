@@ -1,51 +1,14 @@
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:intl/intl.dart';
 import '../models/notebook.dart';
 import '../providers/app_state.dart';
 
-class NotebookSwitcherSheet extends ConsumerStatefulWidget {
+class NotebookSwitcherSheet extends ConsumerWidget {
   const NotebookSwitcherSheet({super.key});
 
   @override
-  ConsumerState<NotebookSwitcherSheet> createState() =>
-      _NotebookSwitcherSheetState();
-}
-
-class _NotebookSwitcherSheetState extends ConsumerState<NotebookSwitcherSheet> {
-  String? _generatedInviteCode;
-  bool _isGeneratingInvite = false;
-
-  Future<void> _generateInvite(Notebook nb) async {
-    setState(() {
-      _isGeneratingInvite = true;
-    });
-    try {
-      final code =
-          await ref.read(appProvider.notifier).api.createInviteCode(nb.id);
-      if (mounted) {
-        setState(() {
-          _generatedInviteCode = code;
-        });
-      }
-    } catch (e) {
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text(e.toString())),
-        );
-      }
-    } finally {
-      if (mounted) {
-        setState(() {
-          _isGeneratingInvite = false;
-        });
-      }
-    }
-  }
-
-  @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context, WidgetRef ref) {
     final appState = ref.watch(appProvider);
     final currentNb = appState.currentNotebook;
 
@@ -107,7 +70,7 @@ class _NotebookSwitcherSheetState extends ConsumerState<NotebookSwitcherSheet> {
                       style: const TextStyle(fontWeight: FontWeight.bold),
                     ),
                     subtitle: Text(
-                      '${nb.birthDate} 生まれ ($ageNow) • 家族 ${nb.members.length}人',
+                      '${nb.birthDate} 生まれ ($ageNow)',
                       style: const TextStyle(fontSize: 12),
                     ),
                     trailing: Row(
@@ -128,49 +91,32 @@ class _NotebookSwitcherSheetState extends ConsumerState<NotebookSwitcherSheet> {
                       ],
                     ),
                     onTap: () async {
-                      await ref.read(appProvider.notifier).selectNotebook(nb.id);
+                      await ref
+                          .read(appProvider.notifier)
+                          .selectNotebook(nb.id);
                       if (context.mounted) Navigator.of(context).pop();
                     },
                   ),
                 );
               }),
               const SizedBox(height: 12),
-              Row(
-                children: [
-                  Expanded(
-                    child: FilledButton.tonalIcon(
-                      onPressed: () {
-                        showDialog(
-                          context: context,
-                          builder: (_) => const NotebookFormDialog(),
-                        );
-                      },
-                      icon: const Icon(Icons.add),
-                      label: const Text('新しいことば帳を作る'),
-                    ),
-                  ),
-                  const SizedBox(width: 8),
-                  Expanded(
-                    child: OutlinedButton.icon(
-                      onPressed: () {
-                        showDialog(
-                          context: context,
-                          builder: (_) => const JoinNotebookDialog(),
-                        );
-                      },
-                      icon: const Icon(Icons.group_add_outlined),
-                      label: const Text('招待コードで参加'),
-                    ),
-                  ),
-                ],
+              FilledButton.tonalIcon(
+                onPressed: () {
+                  showDialog(
+                    context: context,
+                    builder: (_) => const NotebookFormDialog(),
+                  );
+                },
+                icon: const Icon(Icons.add),
+                label: const Text('新しいことば帳を作る'),
               ),
-              if (currentNb != null) ...[
+              if (currentNb != null && currentNb.members.isNotEmpty) ...[
                 const SizedBox(height: 20),
                 const Divider(),
                 const SizedBox(height: 8),
-                Text(
-                  '「${currentNb.title}」を家族と共有',
-                  style: const TextStyle(
+                const Text(
+                  '家族メンバー (ALLOWLIST 共有中)',
+                  style: TextStyle(
                     fontWeight: FontWeight.bold,
                     fontSize: 14,
                   ),
@@ -192,65 +138,6 @@ class _NotebookSwitcherSheetState extends ConsumerState<NotebookSwitcherSheet> {
                       )
                       .toList(),
                 ),
-                const SizedBox(height: 8),
-                if (_generatedInviteCode == null)
-                  OutlinedButton.icon(
-                    onPressed: _isGeneratingInvite
-                        ? null
-                        : () => _generateInvite(currentNb),
-                    icon: const Icon(Icons.share_outlined, size: 18),
-                    label: Text(
-                      _isGeneratingInvite
-                          ? '発行中...'
-                          : '家族招待コードを発行する（7日間有効）',
-                    ),
-                  )
-                else
-                  Container(
-                    padding: const EdgeInsets.all(12),
-                    decoration: BoxDecoration(
-                      color: Colors.amber.shade50,
-                      borderRadius: BorderRadius.circular(12),
-                      border: Border.all(color: Colors.amber.shade300),
-                    ),
-                    child: Row(
-                      children: [
-                        Expanded(
-                          child: Column(
-                            crossAxisAlignment: CrossAxisAlignment.start,
-                            children: [
-                              const Text(
-                                '家族にこの招待コードを伝えてください:',
-                                style: TextStyle(fontSize: 12),
-                              ),
-                              SelectableText(
-                                _generatedInviteCode!,
-                                style: const TextStyle(
-                                  fontSize: 22,
-                                  fontWeight: FontWeight.bold,
-                                  letterSpacing: 3,
-                                ),
-                              ),
-                            ],
-                          ),
-                        ),
-                        IconButton(
-                          tooltip: 'コピー',
-                          icon: const Icon(Icons.copy),
-                          onPressed: () {
-                            Clipboard.setData(
-                              ClipboardData(text: _generatedInviteCode!),
-                            );
-                            ScaffoldMessenger.of(context).showSnackBar(
-                              const SnackBar(
-                                content: Text('招待コードをコピーしました'),
-                              ),
-                            );
-                          },
-                        ),
-                      ],
-                    ),
-                  ),
               ],
             ],
           ),
@@ -275,7 +162,18 @@ class _NotebookFormDialogState extends ConsumerState<NotebookFormDialog> {
   late String _selectedColor;
   bool _isSaving = false;
 
-  static const _emojis = ['👶', '🧒', '👧', '👦', '🦖', '🐰', '🐻', '🐣', '🌸', '🚀'];
+  static const _emojis = [
+    '👶',
+    '🧒',
+    '👧',
+    '👦',
+    '🦖',
+    '🐰',
+    '🐻',
+    '🐣',
+    '🌸',
+    '🚀'
+  ];
   static const _colors = [
     '#FF8A65', // Warm Coral
     '#4DB6AC', // Mint Teal
@@ -290,8 +188,8 @@ class _NotebookFormDialogState extends ConsumerState<NotebookFormDialog> {
     super.initState();
     final ex = widget.existing;
     _nameCtrl = TextEditingController(text: ex?.childName ?? '');
-    _birthDate = ex?.parsedBirthDate ??
-        DateTime.now().subtract(const Duration(days: 365));
+    _birthDate =
+        ex?.parsedBirthDate ?? DateTime.now().subtract(const Duration(days: 365));
     _selectedEmoji = ex?.iconEmoji ?? _emojis.first;
     _selectedColor = ex?.themeColor ?? _colors.first;
   }
@@ -425,29 +323,37 @@ class _NotebookFormDialogState extends ConsumerState<NotebookFormDialog> {
   }
 }
 
-class JoinNotebookDialog extends ConsumerStatefulWidget {
-  const JoinNotebookDialog({super.key});
+class EditDisplayNameDialog extends ConsumerStatefulWidget {
+  final String currentName;
+  const EditDisplayNameDialog({super.key, required this.currentName});
 
   @override
-  ConsumerState<JoinNotebookDialog> createState() => _JoinNotebookDialogState();
+  ConsumerState<EditDisplayNameDialog> createState() =>
+      _EditDisplayNameDialogState();
 }
 
-class _JoinNotebookDialogState extends ConsumerState<JoinNotebookDialog> {
-  final _codeCtrl = TextEditingController();
-  bool _isJoining = false;
+class _EditDisplayNameDialogState extends ConsumerState<EditDisplayNameDialog> {
+  late final TextEditingController _ctrl;
+  bool _saving = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _ctrl = TextEditingController(text: widget.currentName);
+  }
 
   @override
   void dispose() {
-    _codeCtrl.dispose();
+    _ctrl.dispose();
     super.dispose();
   }
 
-  Future<void> _join() async {
-    final code = _codeCtrl.text.trim();
-    if (code.isEmpty) return;
-    setState(() => _isJoining = true);
+  Future<void> _save() async {
+    final name = _ctrl.text.trim();
+    if (name.isEmpty) return;
+    setState(() => _saving = true);
     try {
-      await ref.read(appProvider.notifier).joinNotebook(code);
+      await ref.read(appProvider.notifier).updateDisplayName(name);
       if (mounted) Navigator.of(context).pop();
     } catch (e) {
       if (mounted) {
@@ -456,20 +362,18 @@ class _JoinNotebookDialogState extends ConsumerState<JoinNotebookDialog> {
         );
       }
     } finally {
-      if (mounted) setState(() => _isJoining = false);
+      if (mounted) setState(() => _saving = false);
     }
   }
 
   @override
   Widget build(BuildContext context) {
     return AlertDialog(
-      title: const Text('招待コードで参加'),
+      title: const Text('表示名の変更'),
       content: TextField(
-        controller: _codeCtrl,
-        textCapitalization: TextCapitalization.characters,
+        controller: _ctrl,
         decoration: const InputDecoration(
-          labelText: '8桁の招待コード',
-          hintText: '例: AB12CD34',
+          labelText: '記録に表示する名前（例: パパ、ママ）',
           border: OutlineInputBorder(),
         ),
       ),
@@ -479,8 +383,8 @@ class _JoinNotebookDialogState extends ConsumerState<JoinNotebookDialog> {
           child: const Text('キャンセル'),
         ),
         FilledButton(
-          onPressed: _isJoining ? null : _join,
-          child: const Text('参加する'),
+          onPressed: _saving ? null : _save,
+          child: const Text('保存する'),
         ),
       ],
     );

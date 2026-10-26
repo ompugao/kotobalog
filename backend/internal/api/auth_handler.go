@@ -12,127 +12,18 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/ompugao/kotobalog/backend/internal/models"
-	"golang.org/x/crypto/bcrypt"
 	"golang.org/x/oauth2"
 	"golang.org/x/oauth2/github"
 	"golang.org/x/oauth2/google"
 )
 
-type registerRequest struct {
-	Email       string `json:"email"`
-	Password    string `json:"password"`
-	DisplayName string `json:"display_name"`
-}
-
-type loginRequest struct {
-	Email    string `json:"email"`
-	Password string `json:"password"`
-}
-
-type authResponse struct {
-	Token string      `json:"token"`
-	User  models.User `json:"user"`
-}
-
-func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
-	var req registerRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, "リクエスト形式が不正です")
-		return
-	}
-
-	req.Email = strings.TrimSpace(strings.ToLower(req.Email))
-	req.DisplayName = strings.TrimSpace(req.DisplayName)
-	if req.Email == "" || len(req.Password) < 6 || req.DisplayName == "" {
-		writeError(w, http.StatusBadRequest, "メールアドレス、表示名、6文字以上のパスワードを入力してください")
-		return
-	}
-
-	hash, err := bcrypt.GenerateFromPassword([]byte(req.Password), bcrypt.DefaultCost)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "パスワード処理に失敗しました")
-		return
-	}
-
-	user := models.User{
-		ID:          uuid.NewString(),
-		Email:       req.Email,
-		DisplayName: req.DisplayName,
-		CreatedAt:   time.Now().UTC(),
-	}
-
-	_, err = s.db.Exec(
-		`INSERT INTO users (id, email, password_hash, display_name, created_at) VALUES (?, ?, ?, ?, ?)`,
-		user.ID, user.Email, string(hash), user.DisplayName, user.CreatedAt,
-	)
-	if err != nil {
-		if strings.Contains(err.Error(), "UNIQUE") {
-			writeError(w, http.StatusConflict, "このメールアドレスは既に登録されています")
-			return
-		}
-		writeError(w, http.StatusInternalServerError, "ユーザー登録に失敗しました")
-		return
-	}
-
-	token, err := s.generateToken(user.ID)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "トークン生成に失敗しました")
-		return
-	}
-
-	writeJSON(w, http.StatusCreated, authResponse{
-		Token: token,
-		User:  user,
-	})
-}
-
-func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
-	var req loginRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, "リクエスト形式が不正です")
-		return
-	}
-
-	req.Email = strings.TrimSpace(strings.ToLower(req.Email))
-	var user models.User
-	var passwordHash string
-
-	err := s.db.QueryRow(
-		`SELECT id, email, password_hash, display_name, avatar_url, created_at FROM users WHERE email = ?`,
-		req.Email,
-	).Scan(&user.ID, &user.Email, &passwordHash, &user.DisplayName, &user.AvatarURL, &user.CreatedAt)
-	if err == sql.ErrNoRows {
-		writeError(w, http.StatusUnauthorized, "メールアドレスまたはパスワードが正しくありません")
-		return
-	} else if err != nil {
-		writeError(w, http.StatusInternalServerError, "ログイン処理に失敗しました")
-		return
-	}
-
-	if passwordHash == "" || bcrypt.CompareHashAndPassword([]byte(passwordHash), []byte(req.Password)) != nil {
-		writeError(w, http.StatusUnauthorized, "メールアドレスまたはパスワードが正しくありません")
-		return
-	}
-
-	token, err := s.generateToken(user.ID)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "トークン生成に失敗しました")
-		return
-	}
-
-	writeJSON(w, http.StatusOK, authResponse{
-		Token: token,
-		User:  user,
-	})
-}
-
 func (s *Server) handleMe(w http.ResponseWriter, r *http.Request) {
 	uid := currentUserID(r)
 	var user models.User
 	err := s.db.QueryRow(
-		`SELECT id, email, display_name, avatar_url, created_at FROM users WHERE id = ?`,
+		`SELECT id, identity, email, display_name, avatar_url, created_at FROM users WHERE id = ?`,
 		uid,
-	).Scan(&user.ID, &user.Email, &user.DisplayName, &user.AvatarURL, &user.CreatedAt)
+	).Scan(&user.ID, &user.Identity, &user.Email, &user.DisplayName, &user.AvatarURL, &user.CreatedAt)
 	if err != nil {
 		writeError(w, http.StatusNotFound, "ユーザーが見つかりません")
 		return
@@ -140,10 +31,31 @@ func (s *Server) handleMe(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, user)
 }
 
+func (s *Server) handleUpdateMe(w http.ResponseWriter, r *http.Request) {
+	uid := currentUserID(r)
+	var req struct {
+		DisplayName string `json:"display_name"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "リクエスト形式が不正です")
+		return
+	}
+	name := strings.TrimSpace(req.DisplayName)
+	if name == "" {
+		writeError(w, http.StatusBadRequest, "表示名を入力してください")
+		return
+	}
+	if _, err := s.db.Exec(`UPDATE users SET display_name = ? WHERE id = ?`, name, uid); err != nil {
+		writeError(w, http.StatusInternalServerError, "表示名の更新に失敗しました")
+		return
+	}
+	s.handleMe(w, r)
+}
+
 func (s *Server) oauthConfig(provider string) (*oauth2.Config, error) {
 	base := strings.TrimRight(s.cfg.BaseURL, "/")
 	if base == "" {
-		base = "http://localhost:8080"
+		base = "http://localhost:18081"
 	}
 	switch provider {
 	case "google":
@@ -184,8 +96,25 @@ func (s *Server) handleOAuthRedirect(w http.ResponseWriter, r *http.Request) {
 	if redirectURI == "" {
 		redirectURI = "/"
 	}
-	url := conf.AuthCodeURL(redirectURI)
-	http.Redirect(w, r, url, http.StatusTemporaryRedirect)
+	authURL := conf.AuthCodeURL(redirectURI)
+	http.Redirect(w, r, authURL, http.StatusTemporaryRedirect)
+}
+
+func redirectWithQuery(w http.ResponseWriter, r *http.Request, baseRedirect string, params map[string]string) {
+	if baseRedirect == "" {
+		baseRedirect = "/"
+	}
+	u, err := url.Parse(baseRedirect)
+	if err != nil {
+		http.Redirect(w, r, "/", http.StatusTemporaryRedirect)
+		return
+	}
+	q := u.Query()
+	for k, v := range params {
+		q.Set(k, v)
+	}
+	u.RawQuery = q.Encode()
+	http.Redirect(w, r, u.String(), http.StatusTemporaryRedirect)
 }
 
 func (s *Server) handleOAuthCallback(w http.ResponseWriter, r *http.Request) {
@@ -199,23 +128,23 @@ func (s *Server) handleOAuthCallback(w http.ResponseWriter, r *http.Request) {
 	code := r.URL.Query().Get("code")
 	stateRedirect := r.URL.Query().Get("state")
 	if code == "" {
-		writeError(w, http.StatusBadRequest, "認可コードがありません")
+		redirectWithQuery(w, r, stateRedirect, map[string]string{"error": "missing_code"})
 		return
 	}
 
 	tok, err := conf.Exchange(context.Background(), code)
 	if err != nil {
-		writeError(w, http.StatusUnauthorized, "OAuthトークン交換に失敗しました")
+		redirectWithQuery(w, r, stateRedirect, map[string]string{"error": "exchange_failed"})
 		return
 	}
 
 	client := conf.Client(context.Background(), tok)
-	var extID, email, name, avatar string
+	var extID, identity, email, name, avatar string
 
 	if provider == "google" {
 		resp, err := client.Get("https://www.googleapis.com/oauth2/v2/userinfo")
 		if err != nil || resp.StatusCode != http.StatusOK {
-			writeError(w, http.StatusUnauthorized, "Googleユーザー情報の取得に失敗しました")
+			redirectWithQuery(w, r, stateRedirect, map[string]string{"error": "userinfo_failed"})
 			return
 		}
 		defer resp.Body.Close()
@@ -226,11 +155,18 @@ func (s *Server) handleOAuthCallback(w http.ResponseWriter, r *http.Request) {
 			Picture string `json:"picture"`
 		}
 		_ = json.NewDecoder(resp.Body).Decode(&info)
-		extID, email, name, avatar = info.ID, info.Email, info.Name, info.Picture
+		extID = info.ID
+		email = strings.ToLower(strings.TrimSpace(info.Email))
+		identity = "google:" + email
+		name = info.Name
+		if name == "" {
+			name = email
+		}
+		avatar = info.Picture
 	} else if provider == "github" {
 		resp, err := client.Get("https://api.github.com/user")
 		if err != nil || resp.StatusCode != http.StatusOK {
-			writeError(w, http.StatusUnauthorized, "GitHubユーザー情報の取得に失敗しました")
+			redirectWithQuery(w, r, stateRedirect, map[string]string{"error": "userinfo_failed"})
 			return
 		}
 		defer resp.Body.Close()
@@ -243,63 +179,72 @@ func (s *Server) handleOAuthCallback(w http.ResponseWriter, r *http.Request) {
 		}
 		_ = json.NewDecoder(resp.Body).Decode(&info)
 		extID = fmt.Sprintf("%d", info.ID)
+		login := strings.ToLower(strings.TrimSpace(info.Login))
+		identity = "github:" + login
 		name = info.Name
 		if name == "" {
 			name = info.Login
 		}
 		email = info.Email
 		if email == "" {
-			email = fmt.Sprintf("%s@users.noreply.github.com", info.Login)
+			email = fmt.Sprintf("%s@users.noreply.github.com", login)
 		}
 		avatar = info.AvatarURL
 	}
 
-	userID, err := s.upsertOAuthUser(provider, extID, email, name, avatar)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "OAuthユーザー保存に失敗しました")
+	if !s.allow.Allows(identity) {
+		redirectWithQuery(w, r, stateRedirect, map[string]string{
+			"error":    "not_allowed",
+			"identity": identity,
+		})
 		return
 	}
 
-	jwtToken, err := s.generateToken(userID)
+	userID, err := s.upsertOAuthUser(provider, extID, identity, email, name, avatar)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "JWT生成に失敗しました")
+		redirectWithQuery(w, r, stateRedirect, map[string]string{"error": "db_error"})
 		return
 	}
 
-	if stateRedirect == "" {
-		stateRedirect = "/"
-	}
-	u, err := url.Parse(stateRedirect)
+	jwtToken, err := s.generateToken(userID, identity)
 	if err != nil {
-		stateRedirect = "/?token=" + url.QueryEscape(jwtToken)
-	} else {
-		q := u.Query()
-		q.Set("token", jwtToken)
-		u.RawQuery = q.Encode()
-		stateRedirect = u.String()
+		redirectWithQuery(w, r, stateRedirect, map[string]string{"error": "token_error"})
+		return
 	}
-	http.Redirect(w, r, stateRedirect, http.StatusTemporaryRedirect)
+
+	redirectWithQuery(w, r, stateRedirect, map[string]string{"token": jwtToken})
 }
 
-func (s *Server) upsertOAuthUser(provider, extID, email, name, avatar string) (string, error) {
+func (s *Server) upsertOAuthUser(provider, extID, identity, email, name, avatar string) (string, error) {
 	col := "google_id"
 	if provider == "github" {
 		col = "github_id"
+	} else if provider == "dev" {
+		var id string
+		err := s.db.QueryRow(`SELECT id FROM users WHERE identity = ?`, identity).Scan(&id)
+		if err == sql.ErrNoRows {
+			id = uuid.NewString()
+			_, err = s.db.Exec(
+				`INSERT INTO users (id, identity, email, display_name, avatar_url, created_at) VALUES (?, ?, ?, ?, ?, ?)`,
+				id, identity, email, name, avatar, time.Now().UTC(),
+			)
+		}
+		return id, err
 	}
 
 	var id string
-	err := s.db.QueryRow(fmt.Sprintf(`SELECT id FROM users WHERE %s = ? OR email = ?`, col), extID, email).Scan(&id)
+	err := s.db.QueryRow(fmt.Sprintf(`SELECT id FROM users WHERE %s = ? OR identity = ?`, col), extID, identity).Scan(&id)
 	if err == sql.ErrNoRows {
 		id = uuid.NewString()
 		_, err = s.db.Exec(
-			fmt.Sprintf(`INSERT INTO users (id, email, display_name, avatar_url, %s, created_at) VALUES (?, ?, ?, ?, ?, ?)`, col),
-			id, email, name, avatar, extID, time.Now().UTC(),
+			fmt.Sprintf(`INSERT INTO users (id, identity, email, display_name, avatar_url, %s, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)`, col),
+			id, identity, email, name, avatar, extID, time.Now().UTC(),
 		)
 		return id, err
 	} else if err != nil {
 		return "", err
 	}
 
-	_, _ = s.db.Exec(fmt.Sprintf(`UPDATE users SET %s = ?, avatar_url = ? WHERE id = ?`, col), extID, avatar, id)
+	_, _ = s.db.Exec(fmt.Sprintf(`UPDATE users SET identity = ?, email = ?, avatar_url = ?, %s = ? WHERE id = ?`, col), identity, email, avatar, extID, id)
 	return id, nil
 }

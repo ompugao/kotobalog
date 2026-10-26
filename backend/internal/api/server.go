@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"crypto/subtle"
 	"database/sql"
 	"encoding/json"
 	"fmt"
@@ -18,8 +19,26 @@ type contextKey string
 
 const userIDKey contextKey = "user_id"
 
+type Allowlist map[string]bool
+
+func ParseAllowlist(s string) Allowlist {
+	a := Allowlist{}
+	for _, entry := range strings.Split(s, ",") {
+		if entry = strings.ToLower(strings.TrimSpace(entry)); entry != "" {
+			a[entry] = true
+		}
+	}
+	return a
+}
+
+func (a Allowlist) Allows(identity string) bool {
+	return a[strings.ToLower(strings.TrimSpace(identity))]
+}
+
 type Config struct {
 	JWTSecret          string
+	Allowlist          string
+	DevToken           string
 	AudioDir           string
 	StaticDir          string
 	BaseURL            string
@@ -32,6 +51,7 @@ type Config struct {
 type Server struct {
 	db     *sql.DB
 	cfg    Config
+	allow  Allowlist
 	router *http.ServeMux
 }
 
@@ -49,6 +69,7 @@ func NewServer(database *sql.DB, cfg Config) (*Server, error) {
 	s := &Server{
 		db:     database,
 		cfg:    cfg,
+		allow:  ParseAllowlist(cfg.Allowlist),
 		router: http.NewServeMux(),
 	}
 	s.registerRoutes()
@@ -56,7 +77,6 @@ func NewServer(database *sql.DB, cfg Config) (*Server, error) {
 }
 
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	// CORS headers for Flutter Web & Android clients
 	w.Header().Set("Access-Control-Allow-Origin", "*")
 	w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
 	w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
@@ -81,19 +101,16 @@ func (s *Server) registerRoutes() {
 		})
 	})
 
-	// Auth routes
-	s.router.HandleFunc("POST /api/auth/register", s.handleRegister)
-	s.router.HandleFunc("POST /api/auth/login", s.handleLogin)
+	// Auth routes (OAuth + Allowlist only)
 	s.router.HandleFunc("GET /api/auth/me", s.requireAuth(s.handleMe))
+	s.router.HandleFunc("PUT /api/auth/me", s.requireAuth(s.handleUpdateMe))
 	s.router.HandleFunc("GET /api/auth/oauth/{provider}", s.handleOAuthRedirect)
 	s.router.HandleFunc("GET /api/auth/oauth/{provider}/callback", s.handleOAuthCallback)
 
-	// Notebook routes ("ことば帳")
+	// Notebook routes ("ことば帳" - shared across all allowlisted family members)
 	s.router.HandleFunc("GET /api/notebooks", s.requireAuth(s.handleListNotebooks))
 	s.router.HandleFunc("POST /api/notebooks", s.requireAuth(s.handleCreateNotebook))
 	s.router.HandleFunc("PUT /api/notebooks/{id}", s.requireAuth(s.handleUpdateNotebook))
-	s.router.HandleFunc("POST /api/notebooks/{id}/invites", s.requireAuth(s.handleCreateInvite))
-	s.router.HandleFunc("POST /api/notebooks/join", s.requireAuth(s.handleJoinNotebook))
 
 	// Word Entry routes ("ことば記録")
 	s.router.HandleFunc("GET /api/notebooks/{id}/entries", s.requireAuth(s.handleListEntries))
@@ -115,7 +132,6 @@ func (s *Server) registerRoutes() {
 				fs.ServeHTTP(w, r)
 				return
 			}
-			// SPA fallback to index.html
 			indexFile := filepath.Join(s.cfg.StaticDir, "index.html")
 			if _, err := os.Stat(indexFile); err == nil {
 				http.ServeFile(w, r, indexFile)
@@ -126,11 +142,12 @@ func (s *Server) registerRoutes() {
 	}
 }
 
-func (s *Server) generateToken(userID string) (string, error) {
+func (s *Server) generateToken(userID, identity string) (string, error) {
 	claims := jwt.MapClaims{
-		"sub": userID,
-		"exp": time.Now().Add(30 * 24 * time.Hour).Unix(),
-		"iat": time.Now().Unix(),
+		"sub":      userID,
+		"identity": identity,
+		"exp":      time.Now().Add(365 * 24 * time.Hour).Unix(),
+		"iat":      time.Now().Unix(),
 	}
 	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
 	return token.SignedString([]byte(s.cfg.JWTSecret))
@@ -143,12 +160,23 @@ func (s *Server) requireAuth(next http.HandlerFunc) http.HandlerFunc {
 		if strings.HasPrefix(authHeader, "Bearer ") {
 			tokenStr = strings.TrimPrefix(authHeader, "Bearer ")
 		} else if qToken := r.URL.Query().Get("token"); qToken != "" {
-			// Support ?token=... for audio player URLs on Web/Android
 			tokenStr = qToken
 		}
 
 		if tokenStr == "" {
 			writeError(w, http.StatusUnauthorized, "認証が必要です")
+			return
+		}
+
+		// DevToken support for local/automated testing
+		if s.cfg.DevToken != "" && subtle.ConstantTimeCompare([]byte(tokenStr), []byte(s.cfg.DevToken)) == 1 {
+			uid, err := s.upsertOAuthUser("dev", "local", "dev:local", "dev@local", "開発ユーザー", "")
+			if err != nil {
+				writeError(w, http.StatusInternalServerError, "開発ユーザー作成エラー")
+				return
+			}
+			ctx := context.WithValue(r.Context(), userIDKey, uid)
+			next(w, r.WithContext(ctx))
 			return
 		}
 
@@ -172,6 +200,14 @@ func (s *Server) requireAuth(next http.HandlerFunc) http.HandlerFunc {
 		sub, _ := claims["sub"].(string)
 		if sub == "" {
 			writeError(w, http.StatusUnauthorized, "ユーザーIDが見つかりません")
+			return
+		}
+
+		// Check user still exists and is still in ALLOWLIST (removing from ALLOWLIST revokes session)
+		var identity string
+		err = s.db.QueryRow(`SELECT identity FROM users WHERE id = ?`, sub).Scan(&identity)
+		if err != nil || !s.allow.Allows(identity) {
+			writeError(w, http.StatusForbidden, "ALLOWLISTで許可されていないアカウントです")
 			return
 		}
 
