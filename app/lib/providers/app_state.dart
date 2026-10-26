@@ -1,3 +1,5 @@
+import 'dart:async';
+import 'package:app_links/app_links.dart';
 import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -78,9 +80,13 @@ class AppNotifier extends Notifier<AppState> {
   static const _prefServerUrl = 'kotobalog_server_url';
   static const _prefToken = 'kotobalog_token';
   static const _prefNotebookId = 'kotobalog_notebook_id';
+  StreamSubscription<Uri>? _linkSub;
 
   @override
   AppState build() {
+    ref.onDispose(() {
+      _linkSub?.cancel();
+    });
     Future.microtask(_initialize);
     return AppState(serverUrl: ApiClient.defaultBaseUrl());
   }
@@ -89,6 +95,28 @@ class AppNotifier extends Notifier<AppState> {
         baseUrl: state.serverUrl,
         token: state.token,
       );
+
+  Future<void> _handleCallbackUri(Uri uri) async {
+    final errCode = uri.queryParameters['error'];
+    final errIdentity = uri.queryParameters['identity'] ?? '';
+    if (errCode == 'not_allowed') {
+      state = state.copyWith(
+        authError:
+            'このアカウント ($errIdentity) は ALLOWLIST に登録されていないためログインできません。',
+      );
+      return;
+    } else if (errCode != null && errCode.isNotEmpty) {
+      state = state.copyWith(
+        authError: 'OAuthログインに失敗しました ($errCode)',
+      );
+      return;
+    }
+
+    final urlToken = uri.queryParameters['token'];
+    if (urlToken != null && urlToken.isNotEmpty) {
+      await loginWithToken(urlToken);
+    }
+  }
 
   Future<void> _initialize() async {
     final prefs = await SharedPreferences.getInstance();
@@ -113,6 +141,31 @@ class AppNotifier extends Notifier<AppState> {
         savedToken = urlToken;
         await prefs.setString(_prefToken, urlToken);
       }
+    } else {
+      try {
+        final appLinks = AppLinks();
+        final initialUri = await appLinks.getInitialLink();
+        if (initialUri != null && initialUri.scheme == 'kotobalog') {
+          final urlToken = initialUri.queryParameters['token'];
+          if (urlToken != null && urlToken.isNotEmpty) {
+            savedToken = urlToken;
+            await prefs.setString(_prefToken, urlToken);
+          }
+          final errCode = initialUri.queryParameters['error'];
+          final errIdentity = initialUri.queryParameters['identity'] ?? '';
+          if (errCode == 'not_allowed') {
+            oauthErrorMsg =
+                'このアカウント ($errIdentity) は ALLOWLIST に登録されていないためログインできません。';
+          } else if (errCode != null && errCode.isNotEmpty) {
+            oauthErrorMsg = 'OAuthログインに失敗しました ($errCode)';
+          }
+        }
+        _linkSub = appLinks.uriLinkStream.listen((uri) {
+          if (uri.scheme == 'kotobalog') {
+            _handleCallbackUri(uri);
+          }
+        });
+      } catch (_) {}
     }
 
     state = state.copyWith(

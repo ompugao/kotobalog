@@ -35,7 +35,7 @@ class _AuthScreenState extends ConsumerState<AuthScreen> {
     if (_showServerConfig) {
       await notifier.setServerUrl(_serverCtrl.text);
     }
-    final redirect = kIsWeb ? Uri.base.origin : null;
+    final redirect = kIsWeb ? Uri.base.origin : 'kotobalog://auth';
     final url = notifier.api.oauthUrl(provider, redirectUri: redirect);
     final uri = Uri.parse(url);
     await launchUrl(
