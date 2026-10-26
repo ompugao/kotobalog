@@ -14,12 +14,12 @@ COPY --from=go-builder /kotobalog-server /app/kotobalog-server
 COPY --from=go-builder --chown=nonroot:nonroot /data /data
 COPY backend/web_dist /app/web_dist
 
-ENV PORT=8080
+ENV PORT=18081
 ENV DB_PATH=/data/kotobalog.db
 ENV AUDIO_DIR=/data/audio
 ENV STATIC_DIR=/app/web_dist
 
-EXPOSE 8080
+EXPOSE 18081
 VOLUME ["/data"]
 USER nonroot
 ENTRYPOINT ["/app/kotobalog-server"]
