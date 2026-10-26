@@ -6,6 +6,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import '../models/notebook.dart';
 import '../models/word_entry.dart';
 import '../services/api_client.dart';
+import '../services/url_cleaner.dart';
 
 class AppState {
   final bool isInitializing;
@@ -141,6 +142,7 @@ class AppNotifier extends Notifier<AppState> {
         savedToken = urlToken;
         await prefs.setString(_prefToken, urlToken);
       }
+      clearAuthQueryParams();
     } else {
       try {
         final appLinks = AppLinks();

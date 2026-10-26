@@ -214,10 +214,13 @@ class ApiClient {
 
   String audioUrl(String notebookId, String entryId) {
     final query = <String, String>{};
-    if (token != null && token!.isNotEmpty) {
+    final isSameOriginWeb = kIsWeb && baseUrl == Uri.base.origin;
+    if (!isSameOriginWeb && token != null && token!.isNotEmpty) {
       query['token'] = token!;
     }
-    return _uri('/api/notebooks/$notebookId/entries/$entryId/audio', query)
-        .toString();
+    return _uri(
+      '/api/notebooks/$notebookId/entries/$entryId/audio',
+      query.isEmpty ? null : query,
+    ).toString();
   }
 }

@@ -23,6 +23,18 @@ import (
 
 const oauthStateCookieName = "kotobalog_oauth_state"
 
+func (s *Server) setSessionCookie(w http.ResponseWriter, token string, maxAge int) {
+	http.SetCookie(w, &http.Cookie{
+		Name:     sessionCookieName,
+		Value:    token,
+		Path:     "/",
+		MaxAge:   maxAge,
+		HttpOnly: true,
+		Secure:   strings.HasPrefix(strings.ToLower(s.cfg.BaseURL), "https://"),
+		SameSite: http.SameSiteLaxMode,
+	})
+}
+
 func (s *Server) handleMe(w http.ResponseWriter, r *http.Request) {
 	uid := currentUserID(r)
 	var user models.User
@@ -33,6 +45,9 @@ func (s *Server) handleMe(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		writeError(w, http.StatusNotFound, "ユーザーが見つかりません")
 		return
+	}
+	if authHeader := r.Header.Get("Authorization"); strings.HasPrefix(authHeader, "Bearer ") {
+		s.setSessionCookie(w, strings.TrimPrefix(authHeader, "Bearer "), 30*24*3600)
 	}
 	writeJSON(w, http.StatusOK, user)
 }
@@ -321,6 +336,7 @@ func (s *Server) handleOAuthCallback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	s.setSessionCookie(w, jwtToken, 30*24*3600)
 	redirectWithQuery(w, r, stateRedirect, map[string]string{"token": jwtToken})
 }
 

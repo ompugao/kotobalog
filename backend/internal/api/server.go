@@ -17,7 +17,10 @@ import (
 
 type contextKey string
 
-const userIDKey contextKey = "user_id"
+const (
+	userIDKey         contextKey = "user_id"
+	sessionCookieName string     = "kotobalog_session"
+)
 
 type Allowlist map[string]bool
 
@@ -159,6 +162,8 @@ func (s *Server) requireAuth(next http.HandlerFunc) http.HandlerFunc {
 		authHeader := r.Header.Get("Authorization")
 		if strings.HasPrefix(authHeader, "Bearer ") {
 			tokenStr = strings.TrimPrefix(authHeader, "Bearer ")
+		} else if c, err := r.Cookie(sessionCookieName); err == nil && c.Value != "" {
+			tokenStr = c.Value
 		} else if qToken := r.URL.Query().Get("token"); qToken != "" {
 			tokenStr = qToken
 		}
