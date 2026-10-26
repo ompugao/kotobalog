@@ -79,10 +79,32 @@ func NewServer(database *sql.DB, cfg Config) (*Server, error) {
 	return s, nil
 }
 
+func (s *Server) isAllowedOrigin(origin string) bool {
+	origin = strings.TrimSpace(origin)
+	if origin == "" {
+		return false
+	}
+	base := strings.TrimRight(strings.TrimSpace(s.cfg.BaseURL), "/")
+	if base != "" && strings.EqualFold(origin, base) {
+		return true
+	}
+	if base == "" || strings.HasPrefix(strings.ToLower(base), "http://localhost") || strings.HasPrefix(strings.ToLower(base), "http://127.0.0.1") {
+		lower := strings.ToLower(origin)
+		if strings.HasPrefix(lower, "http://localhost:") || lower == "http://localhost" ||
+			strings.HasPrefix(lower, "http://127.0.0.1:") || lower == "http://127.0.0.1" {
+			return true
+		}
+	}
+	return false
+}
+
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Access-Control-Allow-Origin", "*")
-	w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
-	w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
+	if origin := r.Header.Get("Origin"); s.isAllowedOrigin(origin) {
+		w.Header().Set("Access-Control-Allow-Origin", origin)
+		w.Header().Set("Vary", "Origin")
+		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
+		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
+	}
 
 	if r.Method == http.MethodOptions {
 		w.WriteHeader(http.StatusNoContent)
