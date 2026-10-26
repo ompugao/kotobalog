@@ -1,0 +1,27 @@
+# Data & SQLite
+data/
+backend/data/
+backend/web_dist/
+*.db
+*.db-shm
+*.db-wal
+
+# Env
+.env
+
+# Go
+backend/kotobalog-server
+
+# Flutter
+app/.dart_tool/
+app/.flutter-plugins
+app/.flutter-plugins-dependencies
+app/.packages
+app/build/
+app/ios/
+app/macos/
+app/linux/
+app/windows/
+*.iml
+.idea/
+.vscode/

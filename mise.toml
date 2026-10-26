@@ -1,0 +1,31 @@
+[tools]
+flutter = "3.47.4"
+go = "1.27.3"
+
+[tasks.test-backend]
+description = "Run Go backend tests"
+dir = "backend"
+run = "go test -v ./..."
+
+[tasks.test-app]
+description = "Run Flutter analyzer and tests"
+dir = "app"
+run = [
+  "flutter analyze",
+  "flutter test",
+]
+
+[tasks.build-web]
+description = "Build Flutter Web app into backend static dir"
+dir = "app"
+run = "flutter build web --release -o ../backend/web_dist"
+
+[tasks.dev-backend]
+description = "Start Go backend server"
+dir = "backend"
+run = "go run ./cmd/server"
+
+[tasks.dev-web]
+description = "Run Flutter web in dev mode"
+dir = "app"
+run = "flutter run -d web-server --web-port 8081"
