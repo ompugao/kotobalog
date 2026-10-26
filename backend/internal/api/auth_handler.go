@@ -74,6 +74,13 @@ func (s *Server) handleUpdateMe(w http.ResponseWriter, r *http.Request) {
 	s.handleMe(w, r)
 }
 
+func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
+	uid := currentUserID(r)
+	_, _ = s.db.Exec(`UPDATE users SET token_version = token_version + 1 WHERE id = ?`, uid)
+	s.setSessionCookie(w, "", -1)
+	writeJSON(w, http.StatusOK, map[string]string{"status": "logged_out"})
+}
+
 func (s *Server) oauthConfig(provider string) (*oauth2.Config, error) {
 	base := strings.TrimRight(s.cfg.BaseURL, "/")
 	if base == "" {

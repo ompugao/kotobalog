@@ -109,6 +109,12 @@ class ApiClient {
     return User.fromJson(_decodeObj(res));
   }
 
+  Future<void> logout() async {
+    try {
+      await http.post(_uri('/api/auth/logout'), headers: _headers());
+    } catch (_) {}
+  }
+
   Future<List<Notebook>> listNotebooks() async {
     final res = await http.get(_uri('/api/notebooks'), headers: _headers());
     return _decodeList(res)

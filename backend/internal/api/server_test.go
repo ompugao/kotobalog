@@ -158,6 +158,16 @@ func TestAllowlistAndSharedNotebooksFlow(t *testing.T) {
 	if xssEntry.AudioMime != "audio/wav" {
 		t.Fatalf("expected audio_mime to be sanitized to audio/wav, got %q", xssEntry.AudioMime)
 	}
+
+	// 8. Logout revokes issued JWT on server
+	logoutRec := doJSON(t, srv, http.MethodPost, "/api/auth/logout", papaToken, nil)
+	if logoutRec.Code != http.StatusOK {
+		t.Fatalf("expected 200 on logout, got %d", logoutRec.Code)
+	}
+	afterLogoutRec := doJSON(t, srv, http.MethodGet, "/api/notebooks", papaToken, nil)
+	if afterLogoutRec.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401 after token revocation, got %d", afterLogoutRec.Code)
+	}
 }
 
 func TestOAuthStateCSRFAndOpenRedirectProtection(t *testing.T) {

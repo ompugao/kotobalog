@@ -129,6 +129,7 @@ func (s *Server) registerRoutes() {
 	// Auth routes (OAuth + Allowlist only)
 	s.router.HandleFunc("GET /api/auth/me", s.requireAuth(s.handleMe))
 	s.router.HandleFunc("PUT /api/auth/me", s.requireAuth(s.handleUpdateMe))
+	s.router.HandleFunc("POST /api/auth/logout", s.requireAuth(s.handleLogout))
 	s.router.HandleFunc("GET /api/auth/oauth/{provider}", s.handleOAuthRedirect)
 	s.router.HandleFunc("GET /api/auth/oauth/{provider}/callback", s.handleOAuthCallback)
 
@@ -168,10 +169,13 @@ func (s *Server) registerRoutes() {
 }
 
 func (s *Server) generateToken(userID, identity string) (string, error) {
+	var tokenVersion int
+	_ = s.db.QueryRow(`SELECT token_version FROM users WHERE id = ?`, userID).Scan(&tokenVersion)
 	claims := jwt.MapClaims{
 		"sub":      userID,
 		"identity": identity,
-		"exp":      time.Now().Add(365 * 24 * time.Hour).Unix(),
+		"ver":      tokenVersion,
+		"exp":      time.Now().Add(30 * 24 * time.Hour).Unix(),
 		"iat":      time.Now().Unix(),
 	}
 	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
@@ -230,11 +234,20 @@ func (s *Server) requireAuth(next http.HandlerFunc) http.HandlerFunc {
 			return
 		}
 
-		// Check user still exists and is still in ALLOWLIST (removing from ALLOWLIST revokes session)
+		// Check user still exists, token_version matches, and is still in ALLOWLIST
 		var identity string
-		err = s.db.QueryRow(`SELECT identity FROM users WHERE id = ?`, sub).Scan(&identity)
+		var dbTokenVer int
+		err = s.db.QueryRow(`SELECT identity, token_version FROM users WHERE id = ?`, sub).Scan(&identity, &dbTokenVer)
 		if err != nil || !s.allow.Allows(identity) {
 			writeError(w, http.StatusForbidden, "ALLOWLISTで許可されていないアカウントです")
+			return
+		}
+		claimVer := 0
+		if v, ok := claims["ver"].(float64); ok {
+			claimVer = int(v)
+		}
+		if claimVer != dbTokenVer {
+			writeError(w, http.StatusUnauthorized, "無効化されたトークンです")
 			return
 		}
 

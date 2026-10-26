@@ -53,6 +53,7 @@ func migrate(database *sql.DB) error {
 		avatar_url TEXT NOT NULL DEFAULT '',
 		google_id TEXT,
 		github_id TEXT,
+		token_version INTEGER NOT NULL DEFAULT 0,
 		created_at DATETIME NOT NULL
 	);
 
@@ -88,6 +89,10 @@ func migrate(database *sql.DB) error {
 
 	// Ensure identity column exists on older DBs
 	_, err := database.Exec(`ALTER TABLE users ADD COLUMN identity TEXT NOT NULL DEFAULT ''`)
+	if err != nil && !strings.Contains(err.Error(), "duplicate column") {
+		return err
+	}
+	_, err = database.Exec(`ALTER TABLE users ADD COLUMN token_version INTEGER NOT NULL DEFAULT 0`)
 	if err != nil && !strings.Contains(err.Error(), "duplicate column") {
 		return err
 	}

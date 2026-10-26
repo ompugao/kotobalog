@@ -247,6 +247,7 @@ class AppNotifier extends Notifier<AppState> {
   }
 
   Future<void> logout() async {
+    await api.logout();
     final prefs = await SharedPreferences.getInstance();
     await prefs.remove(_prefToken);
     state = state.copyWith(
