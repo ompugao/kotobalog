@@ -6,6 +6,8 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
+	"strings"
 	"testing"
 
 	"github.com/ompugao/kotobalog/backend/internal/db"
@@ -134,5 +136,49 @@ func TestAllowlistAndSharedNotebooksFlow(t *testing.T) {
 	srv.ServeHTTP(audioRec, audioReq)
 	if audioRec.Code != http.StatusOK || !bytes.Equal(audioRec.Body.Bytes(), dummyWav) {
 		t.Fatalf("expected 200 and audio bytes, got %d", audioRec.Code)
+	}
+}
+
+func TestOAuthStateCSRFAndOpenRedirectProtection(t *testing.T) {
+	srv := setupTestServer(t, "github:ompugao")
+	srv.cfg.BaseURL = "https://kotobalog.example.com"
+	srv.cfg.GitHubClientID = "dummy-id"
+	srv.cfg.GitHubClientSecret = "dummy-secret"
+
+	// 1. Open redirect attempt via redirect_uri should be sanitized to "/"
+	req := httptest.NewRequest(http.MethodGet, "/api/auth/oauth/github?redirect_uri=https://evil.example.com/steal", nil)
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+	if rec.Code != http.StatusTemporaryRedirect {
+		t.Fatalf("expected 307 redirect, got %d", rec.Code)
+	}
+	loc, err := url.Parse(rec.Header().Get("Location"))
+	if err != nil {
+		t.Fatalf("invalid redirect Location: %v", err)
+	}
+	stateParam := loc.Query().Get("state")
+	if stateParam == "" || strings.Contains(stateParam, "evil.example.com") {
+		t.Fatalf("expected signed state without evil url, got %q", stateParam)
+	}
+
+	var stateCookie *http.Cookie
+	for _, c := range rec.Result().Cookies() {
+		if c.Name == oauthStateCookieName {
+			stateCookie = c
+		}
+	}
+	if stateCookie == nil || !stateCookie.HttpOnly {
+		t.Fatalf("expected HttpOnly %s cookie", oauthStateCookieName)
+	}
+
+	// 2. Callback without state cookie or with forged state must fail with ?error=invalid_state on "/"
+	cbReq := httptest.NewRequest(http.MethodGet, "/api/auth/oauth/github/callback?code=123&state=https://evil.example.com", nil)
+	cbRec := httptest.NewRecorder()
+	srv.ServeHTTP(cbRec, cbReq)
+	if cbRec.Code != http.StatusTemporaryRedirect {
+		t.Fatalf("expected 307 on invalid state, got %d", cbRec.Code)
+	}
+	if gotLoc := cbRec.Header().Get("Location"); gotLoc != "/?error=invalid_state" {
+		t.Fatalf("expected redirect to /?error=invalid_state, got %q", gotLoc)
 	}
 }
