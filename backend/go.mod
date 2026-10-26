@@ -1,6 +1,6 @@
 module github.com/ompugao/kotobalog/backend
 
-go 1.27.3
+go 1.27
 
 require (
 	github.com/golang-jwt/jwt/v5 v5.3.1
