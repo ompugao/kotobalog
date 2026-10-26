@@ -69,6 +69,11 @@ func (s *Server) getNotebookByID(notebookID string) (*models.Notebook, error) {
 }
 
 func (s *Server) handleListNotebooks(w http.ResponseWriter, r *http.Request) {
+	members, _ := s.listAllowlistedMembers()
+	if members == nil {
+		members = []models.NotebookMember{}
+	}
+
 	rows, err := s.db.Query(`
 		SELECT id, child_name, birth_date, theme_color, icon_emoji, created_at
 		FROM notebooks
@@ -79,11 +84,6 @@ func (s *Server) handleListNotebooks(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer rows.Close()
-
-	members, _ := s.listAllowlistedMembers()
-	if members == nil {
-		members = []models.NotebookMember{}
-	}
 
 	notebooks := []models.Notebook{}
 	for rows.Next() {
