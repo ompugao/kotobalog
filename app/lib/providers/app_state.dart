@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:typed_data';
 import 'package:app_links/app_links.dart';
 import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -328,6 +329,35 @@ class AppNotifier extends Notifier<AppState> {
     } catch (_) {
       state = state.copyWith(isLoadingEntries: false);
     }
+  }
+
+  Future<WordEntry> updateEntry({
+    required String entryId,
+    required String word,
+    required String meaning,
+    required DateTime spokenAt,
+    Uint8List? audioBytes,
+    String audioMime = 'audio/wav',
+    int audioDurationMs = 0,
+    bool removeAudio = false,
+  }) async {
+    final nb = state.currentNotebook;
+    if (nb == null) {
+      throw ApiException('ことば帳が選択されていません');
+    }
+    final updated = await api.updateEntry(
+      notebookId: nb.id,
+      entryId: entryId,
+      word: word,
+      meaning: meaning,
+      spokenAt: spokenAt,
+      audioBytes: audioBytes,
+      audioMime: audioMime,
+      audioDurationMs: audioDurationMs,
+      removeAudio: removeAudio,
+    );
+    await refreshEntries();
+    return updated;
   }
 
   Future<void> deleteEntry(String entryId) async {

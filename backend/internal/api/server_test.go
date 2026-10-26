@@ -144,6 +144,25 @@ func TestAllowlistAndSharedNotebooksFlow(t *testing.T) {
 		t.Fatalf("expected X-Content-Type-Options: nosniff")
 	}
 
+	// 6.5 Mama updates entry memo/word and trims audio
+	trimmedWav := []byte("RIFFtrimWAVEfmt ")
+	updateRec := doJSON(t, srv, http.MethodPut, "/api/notebooks/"+nb.ID+"/entries/"+createdEntry.ID, mamaToken, map[string]any{
+		"word":              "ぶーぶー！",
+		"meaning":           "救急車と消防車の両方を見て大喜びで言った（メモ追記）",
+		"spoken_at":         "2026-10-26T11:00:00Z",
+		"audio_base64":      base64.StdEncoding.EncodeToString(trimmedWav),
+		"audio_mime":        "audio/wav",
+		"audio_duration_ms": 1200,
+	})
+	if updateRec.Code != http.StatusOK {
+		t.Fatalf("expected 200 on update entry, got %d: %s", updateRec.Code, updateRec.Body.String())
+	}
+	var updatedEntry models.WordEntry
+	_ = json.NewDecoder(updateRec.Body).Decode(&updatedEntry)
+	if updatedEntry.Word != "ぶーぶー！" || !strings.Contains(updatedEntry.Meaning, "メモ追記") || updatedEntry.AudioDurationMs != 1200 {
+		t.Fatalf("unexpected updated entry: %+v", updatedEntry)
+	}
+
 	// 7. Uploading malicious audio_mime (e.g., text/html) must be sanitized to audio/wav
 	rec = doJSON(t, srv, http.MethodPost, "/api/notebooks/"+nb.ID+"/entries", papaToken, map[string]any{
 		"word":         "てすと",

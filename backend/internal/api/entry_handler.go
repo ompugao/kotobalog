@@ -23,6 +23,7 @@ type entryJSONRequest struct {
 	AudioBase64     string `json:"audio_base64"`
 	AudioMime       string `json:"audio_mime"`
 	AudioDurationMs int    `json:"audio_duration_ms"`
+	RemoveAudio     bool   `json:"remove_audio"`
 }
 
 func (s *Server) handleListEntries(w http.ResponseWriter, r *http.Request) {
@@ -298,7 +299,7 @@ func (s *Server) handleUpdateEntry(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	r.Body = http.MaxBytesReader(w, r.Body, maxMetaBodyBytes)
+	r.Body = http.MaxBytesReader(w, r.Body, maxEntryBodyBytes)
 
 	var req entryJSONRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -312,12 +313,73 @@ func (s *Server) handleUpdateEntry(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "「ことば」を入力してください")
 		return
 	}
-	spokenAt := parseSpokenAt(req.SpokenAt)
 
-	_, err = s.db.Exec(`
-		UPDATE word_entries SET word = ?, meaning = ?, spoken_at = ?
-		WHERE notebook_id = ? AND id = ?
-	`, word, meaning, spokenAt, notebookID, entryID)
+	var oldAudioPath string
+	var oldSpokenAt time.Time
+	err = s.db.QueryRow(
+		`SELECT audio_path, spoken_at FROM word_entries WHERE notebook_id = ? AND id = ?`,
+		notebookID, entryID,
+	).Scan(&oldAudioPath, &oldSpokenAt)
+	if err == sql.ErrNoRows {
+		writeError(w, http.StatusNotFound, "ことばが見つかりません")
+		return
+	} else if err != nil {
+		writeError(w, http.StatusInternalServerError, "ことばの取得に失敗しました")
+		return
+	}
+
+	spokenAt := oldSpokenAt
+	if strings.TrimSpace(req.SpokenAt) != "" {
+		spokenAt = parseSpokenAt(req.SpokenAt)
+	}
+
+	if req.AudioBase64 != "" {
+		decoded, err := base64.StdEncoding.DecodeString(req.AudioBase64)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, "音声データのデコードに失敗しました")
+			return
+		}
+		if len(decoded) > maxAudioBytes {
+			writeError(w, http.StatusRequestEntityTooLarge, "音声ファイルのサイズが大きすぎます（上限20MB）")
+			return
+		}
+		audioMime := sanitizeAudioMime(req.AudioMime)
+		safeNbID := filepath.Base(notebookID)
+		nbDir := filepath.Join(s.cfg.AudioDir, safeNbID)
+		if err := os.MkdirAll(nbDir, 0755); err != nil {
+			writeError(w, http.StatusInternalServerError, "音声保存ディレクトリの作成に失敗しました")
+			return
+		}
+		filename := entryID + extForMime(audioMime)
+		fullPath := filepath.Join(nbDir, filename)
+		if oldAudioPath != "" && oldAudioPath != filepath.Join(safeNbID, filename) {
+			_ = os.Remove(filepath.Join(s.cfg.AudioDir, oldAudioPath))
+		}
+		if err := os.WriteFile(fullPath, decoded, 0644); err != nil {
+			writeError(w, http.StatusInternalServerError, "音声ファイルの保存に失敗しました")
+			return
+		}
+		newAudioPath := filepath.Join(safeNbID, filename)
+		_, err = s.db.Exec(`
+			UPDATE word_entries
+			SET word = ?, meaning = ?, spoken_at = ?, audio_path = ?, audio_mime = ?, audio_duration_ms = ?
+			WHERE notebook_id = ? AND id = ?
+		`, word, meaning, spokenAt, newAudioPath, audioMime, req.AudioDurationMs, notebookID, entryID)
+	} else if req.RemoveAudio {
+		if oldAudioPath != "" {
+			_ = os.Remove(filepath.Join(s.cfg.AudioDir, oldAudioPath))
+		}
+		_, err = s.db.Exec(`
+			UPDATE word_entries
+			SET word = ?, meaning = ?, spoken_at = ?, audio_path = '', audio_mime = '', audio_duration_ms = 0
+			WHERE notebook_id = ? AND id = ?
+		`, word, meaning, spokenAt, notebookID, entryID)
+	} else {
+		_, err = s.db.Exec(`
+			UPDATE word_entries SET word = ?, meaning = ?, spoken_at = ?
+			WHERE notebook_id = ? AND id = ?
+		`, word, meaning, spokenAt, notebookID, entryID)
+	}
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "ことばの更新に失敗しました")
 		return

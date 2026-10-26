@@ -210,6 +210,37 @@ class ApiClient {
     return WordEntry.fromJson(_decodeObj(res));
   }
 
+  Future<WordEntry> updateEntry({
+    required String notebookId,
+    required String entryId,
+    required String word,
+    required String meaning,
+    required DateTime spokenAt,
+    Uint8List? audioBytes,
+    String audioMime = 'audio/wav',
+    int audioDurationMs = 0,
+    bool removeAudio = false,
+  }) async {
+    final body = <String, dynamic>{
+      'word': word,
+      'meaning': meaning,
+      'spoken_at': spokenAt.toUtc().toIso8601String(),
+    };
+    if (audioBytes != null && audioBytes.isNotEmpty) {
+      body['audio_base64'] = base64Encode(audioBytes);
+      body['audio_mime'] = audioMime;
+      body['audio_duration_ms'] = audioDurationMs;
+    } else if (removeAudio) {
+      body['remove_audio'] = true;
+    }
+    final res = await http.put(
+      _uri('/api/notebooks/$notebookId/entries/$entryId'),
+      headers: _headers(),
+      body: jsonEncode(body),
+    );
+    return WordEntry.fromJson(_decodeObj(res));
+  }
+
   Future<void> deleteEntry(String notebookId, String entryId) async {
     final res = await http.delete(
       _uri('/api/notebooks/$notebookId/entries/$entryId'),

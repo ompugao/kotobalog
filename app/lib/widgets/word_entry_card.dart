@@ -5,6 +5,7 @@ import 'package:intl/intl.dart';
 import '../models/notebook.dart';
 import '../models/word_entry.dart';
 import '../providers/app_state.dart';
+import 'record_entry_sheet.dart';
 
 class WordEntryCard extends ConsumerStatefulWidget {
   final WordEntry entry;
@@ -28,6 +29,21 @@ class _WordEntryCardState extends ConsumerState<WordEntryCard> {
   void dispose() {
     _player?.dispose();
     super.dispose();
+  }
+
+  void _openEditSheet() {
+    if (_isPlaying) {
+      _player?.stop();
+      setState(() => _isPlaying = false);
+    }
+    showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
+      ),
+      builder: (_) => RecordEntrySheet(existingEntry: widget.entry),
+    );
   }
 
   Future<void> _toggleAudio() async {
@@ -74,7 +90,7 @@ class _WordEntryCardState extends ConsumerState<WordEntryCard> {
     final entry = widget.entry;
     final nb = widget.notebook;
     final ageLabel = nb.ageLabelAt(entry.spokenAt);
-    final dateStr = DateFormat('yyyy/MM/dd HH:mm').format(entry.spokenAt);
+    final dateStr = DateFormat('yyyy/MM/dd HH:mm').format(entry.spokenAt.toLocal());
 
     return Card(
       margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
@@ -92,29 +108,54 @@ class _WordEntryCardState extends ConsumerState<WordEntryCard> {
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 Expanded(
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Text(
-                        '「${entry.word}」',
-                        style: const TextStyle(
-                          fontSize: 21,
-                          fontWeight: FontWeight.bold,
-                          color: Color(0xFF3E2723),
-                        ),
-                      ),
-                      if (entry.meaning.isNotEmpty) ...[
-                        const SizedBox(height: 6),
-                        Text(
-                          entry.meaning,
-                          style: TextStyle(
-                            fontSize: 14,
-                            color: Colors.brown.shade700,
-                            height: 1.4,
+                  child: InkWell(
+                    borderRadius: BorderRadius.circular(8),
+                    onTap: _openEditSheet,
+                    child: Padding(
+                      padding: const EdgeInsets.symmetric(vertical: 2),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            '「${entry.word}」',
+                            style: const TextStyle(
+                              fontSize: 21,
+                              fontWeight: FontWeight.bold,
+                              color: Color(0xFF3E2723),
+                            ),
                           ),
-                        ),
-                      ],
-                    ],
+                          const SizedBox(height: 6),
+                          if (entry.meaning.isNotEmpty)
+                            Text(
+                              entry.meaning,
+                              style: TextStyle(
+                                fontSize: 14,
+                                color: Colors.brown.shade700,
+                                height: 1.4,
+                              ),
+                            )
+                          else
+                            Row(
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                Icon(
+                                  Icons.edit_note,
+                                  size: 15,
+                                  color: Colors.brown.shade400,
+                                ),
+                                const SizedBox(width: 4),
+                                Text(
+                                  '記録メモを追加...',
+                                  style: TextStyle(
+                                    fontSize: 13,
+                                    color: Colors.brown.shade400,
+                                  ),
+                                ),
+                              ],
+                            ),
+                        ],
+                      ),
+                    ),
                   ),
                 ),
                 if (entry.hasAudio)
@@ -136,10 +177,21 @@ class _WordEntryCardState extends ConsumerState<WordEntryCard> {
                           : _formatDuration(entry.audioDurationMs),
                     ),
                   ),
+                IconButton(
+                  tooltip: '記録メモ・ことばを編集',
+                  icon: Icon(
+                    Icons.edit_outlined,
+                    size: 20,
+                    color: Colors.brown.shade600,
+                  ),
+                  onPressed: _openEditSheet,
+                ),
                 PopupMenuButton<String>(
                   icon: const Icon(Icons.more_vert, size: 20),
                   onSelected: (val) async {
-                    if (val == 'delete') {
+                    if (val == 'edit') {
+                      _openEditSheet();
+                    } else if (val == 'delete') {
                       final ok = await showDialog<bool>(
                         context: context,
                         builder: (ctx) => AlertDialog(
@@ -165,6 +217,16 @@ class _WordEntryCardState extends ConsumerState<WordEntryCard> {
                     }
                   },
                   itemBuilder: (_) => const [
+                    PopupMenuItem(
+                      value: 'edit',
+                      child: Row(
+                        children: [
+                          Icon(Icons.edit_outlined, size: 18),
+                          SizedBox(width: 8),
+                          Text('記録・メモを編集'),
+                        ],
+                      ),
+                    ),
                     PopupMenuItem(
                       value: 'delete',
                       child: Row(
