@@ -137,6 +137,27 @@ func TestAllowlistAndSharedNotebooksFlow(t *testing.T) {
 	if audioRec.Code != http.StatusOK || !bytes.Equal(audioRec.Body.Bytes(), dummyWav) {
 		t.Fatalf("expected 200 and audio bytes, got %d", audioRec.Code)
 	}
+	if gotMime := audioRec.Header().Get("Content-Type"); !strings.HasPrefix(gotMime, "audio/wav") {
+		t.Fatalf("expected audio/wav Content-Type, got %q", gotMime)
+	}
+	if audioRec.Header().Get("X-Content-Type-Options") != "nosniff" {
+		t.Fatalf("expected X-Content-Type-Options: nosniff")
+	}
+
+	// 7. Uploading malicious audio_mime (e.g., text/html) must be sanitized to audio/wav
+	rec = doJSON(t, srv, http.MethodPost, "/api/notebooks/"+nb.ID+"/entries", papaToken, map[string]any{
+		"word":         "てすと",
+		"audio_base64": base64.StdEncoding.EncodeToString([]byte("<script>alert(1)</script>")),
+		"audio_mime":   "text/html",
+	})
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("expected 201, got %d", rec.Code)
+	}
+	var xssEntry models.WordEntry
+	_ = json.NewDecoder(rec.Body).Decode(&xssEntry)
+	if xssEntry.AudioMime != "audio/wav" {
+		t.Fatalf("expected audio_mime to be sanitized to audio/wav, got %q", xssEntry.AudioMime)
+	}
 }
 
 func TestOAuthStateCSRFAndOpenRedirectProtection(t *testing.T) {

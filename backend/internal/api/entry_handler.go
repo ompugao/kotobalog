@@ -102,16 +102,29 @@ func parseSpokenAt(s string) time.Time {
 	return time.Now().UTC()
 }
 
-func extForMime(mime string) string {
-	mime = strings.ToLower(mime)
+func sanitizeAudioMime(mime string) string {
+	mime = strings.ToLower(strings.TrimSpace(mime))
 	switch {
 	case strings.Contains(mime, "wav"):
-		return ".wav"
+		return "audio/wav"
 	case strings.Contains(mime, "webm"):
-		return ".webm"
+		return "audio/webm"
 	case strings.Contains(mime, "ogg") || strings.Contains(mime, "opus"):
-		return ".ogg"
+		return "audio/ogg"
 	case strings.Contains(mime, "mp4") || strings.Contains(mime, "m4a") || strings.Contains(mime, "aac"):
+		return "audio/mp4"
+	default:
+		return "audio/wav"
+	}
+}
+
+func extForMime(mime string) string {
+	switch sanitizeAudioMime(mime) {
+	case "audio/webm":
+		return ".webm"
+	case "audio/ogg":
+		return ".ogg"
+	case "audio/mp4":
 		return ".m4a"
 	default:
 		return ".wav"
@@ -200,7 +213,9 @@ func (s *Server) handleCreateEntry(w http.ResponseWriter, r *http.Request) {
 	audioPath := ""
 
 	if len(audioBytes) > 0 {
-		nbDir := filepath.Join(s.cfg.AudioDir, notebookID)
+		audioMime = sanitizeAudioMime(audioMime)
+		safeNbID := filepath.Base(notebookID)
+		nbDir := filepath.Join(s.cfg.AudioDir, safeNbID)
 		if err := os.MkdirAll(nbDir, 0755); err != nil {
 			writeError(w, http.StatusInternalServerError, "音声保存ディレクトリの作成に失敗しました")
 			return
@@ -211,7 +226,9 @@ func (s *Server) handleCreateEntry(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusInternalServerError, "音声ファイルの保存に失敗しました")
 			return
 		}
-		audioPath = filepath.Join(notebookID, filename)
+		audioPath = filepath.Join(safeNbID, filename)
+	} else {
+		audioMime = ""
 	}
 
 	_, err = s.db.Exec(`
@@ -350,9 +367,10 @@ func (s *Server) handleGetEntryAudio(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	fullPath := filepath.Join(s.cfg.AudioDir, audioPath)
-	if audioMime != "" {
-		w.Header().Set("Content-Type", audioMime)
-	}
+	fullPath := filepath.Join(s.cfg.AudioDir, filepath.Clean(audioPath))
+	safeMime := sanitizeAudioMime(audioMime)
+	w.Header().Set("Content-Type", safeMime)
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	w.Header().Set("Content-Security-Policy", "default-src 'none'")
 	http.ServeFile(w, r, fullPath)
 }
