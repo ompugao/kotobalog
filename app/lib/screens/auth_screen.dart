@@ -185,6 +185,7 @@ class _AuthScreenState extends ConsumerState<AuthScreen> {
                       TextField(
                         controller: _emailCtrl,
                         keyboardType: TextInputType.emailAddress,
+                        textInputAction: TextInputAction.next,
                         decoration: const InputDecoration(
                           labelText: 'メールアドレス',
                           prefixIcon: Icon(Icons.email_outlined),
