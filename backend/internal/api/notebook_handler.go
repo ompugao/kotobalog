@@ -97,6 +97,7 @@ func (s *Server) handleListNotebooks(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleCreateNotebook(w http.ResponseWriter, r *http.Request) {
+	r.Body = http.MaxBytesReader(w, r.Body, 64<<10)
 	var req createNotebookRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, "リクエスト形式が不正です")
@@ -138,6 +139,7 @@ func (s *Server) handleCreateNotebook(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleUpdateNotebook(w http.ResponseWriter, r *http.Request) {
 	notebookID := r.PathValue("id")
+	r.Body = http.MaxBytesReader(w, r.Body, 64<<10)
 
 	var req createNotebookRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {

@@ -4,6 +4,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"time"
 
 	"github.com/ompugao/kotobalog/backend/internal/api"
 	"github.com/ompugao/kotobalog/backend/internal/db"
@@ -51,8 +52,17 @@ func main() {
 		log.Fatalf("failed to initialize server: %v", err)
 	}
 
+	httpSrv := &http.Server{
+		Addr:              ":" + port,
+		Handler:           srv,
+		ReadHeaderTimeout: 10 * time.Second,
+		ReadTimeout:       30 * time.Second,
+		WriteTimeout:      60 * time.Second,
+		IdleTimeout:       120 * time.Second,
+	}
+
 	log.Printf("KotobaLog server listening on http://0.0.0.0:%s", port)
-	if err := http.ListenAndServe(":"+port, srv); err != nil {
+	if err := httpSrv.ListenAndServe(); err != nil {
 		log.Fatalf("server error: %v", err)
 	}
 }

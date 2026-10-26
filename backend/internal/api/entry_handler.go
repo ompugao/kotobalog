@@ -131,6 +131,12 @@ func extForMime(mime string) string {
 	}
 }
 
+const (
+	maxAudioBytes     = 20 << 20 // 20 MB
+	maxEntryBodyBytes = 28 << 20 // 28 MB (allows base64 overhead for 20 MB audio)
+	maxMetaBodyBytes  = 64 << 10 // 64 KB
+)
+
 func (s *Server) handleCreateEntry(w http.ResponseWriter, r *http.Request) {
 	uid := currentUserID(r)
 	notebookID := r.PathValue("id")
@@ -141,6 +147,8 @@ func (s *Server) handleCreateEntry(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	r.Body = http.MaxBytesReader(w, r.Body, maxEntryBodyBytes)
+
 	var word, meaning, audioMime string
 	var spokenAt time.Time
 	var audioBytes []byte
@@ -148,8 +156,8 @@ func (s *Server) handleCreateEntry(w http.ResponseWriter, r *http.Request) {
 
 	contentType := r.Header.Get("Content-Type")
 	if strings.HasPrefix(contentType, "multipart/form-data") {
-		if err := r.ParseMultipartForm(20 << 20); err != nil {
-			writeError(w, http.StatusBadRequest, "マルチパートデータの解析に失敗しました")
+		if err := r.ParseMultipartForm(maxAudioBytes); err != nil {
+			writeError(w, http.StatusBadRequest, "マルチパートデータの解析に失敗しました（サイズ上限超過または形式不正）")
 			return
 		}
 		word = strings.TrimSpace(r.FormValue("word"))
@@ -161,7 +169,12 @@ func (s *Server) handleCreateEntry(w http.ResponseWriter, r *http.Request) {
 		file, header, err := r.FormFile("audio")
 		if err == nil {
 			defer file.Close()
-			audioBytes, _ = io.ReadAll(file)
+			data, readErr := io.ReadAll(io.LimitReader(file, maxAudioBytes+1))
+			if readErr != nil || len(data) > maxAudioBytes {
+				writeError(w, http.StatusRequestEntityTooLarge, "音声ファイルのサイズが大きすぎます（上限20MB）")
+				return
+			}
+			audioBytes = data
 			if audioMime == "" {
 				audioMime = header.Header.Get("Content-Type")
 			}
@@ -182,7 +195,7 @@ func (s *Server) handleCreateEntry(w http.ResponseWriter, r *http.Request) {
 	} else {
 		var req entryJSONRequest
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			writeError(w, http.StatusBadRequest, "リクエスト形式が不正です")
+			writeError(w, http.StatusBadRequest, "リクエスト形式が不正です（またはサイズ上限超過）")
 			return
 		}
 		word = strings.TrimSpace(req.Word)
@@ -194,6 +207,10 @@ func (s *Server) handleCreateEntry(w http.ResponseWriter, r *http.Request) {
 			decoded, err := base64.StdEncoding.DecodeString(req.AudioBase64)
 			if err != nil {
 				writeError(w, http.StatusBadRequest, "音声データのデコードに失敗しました")
+				return
+			}
+			if len(decoded) > maxAudioBytes {
+				writeError(w, http.StatusRequestEntityTooLarge, "音声ファイルのサイズが大きすぎます（上限20MB）")
 				return
 			}
 			audioBytes = decoded
@@ -280,6 +297,8 @@ func (s *Server) handleUpdateEntry(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusForbidden, "このことば帳へのアクセス権限がありません")
 		return
 	}
+
+	r.Body = http.MaxBytesReader(w, r.Body, maxMetaBodyBytes)
 
 	var req entryJSONRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {

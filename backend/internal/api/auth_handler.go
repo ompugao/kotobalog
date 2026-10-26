@@ -39,6 +39,7 @@ func (s *Server) handleMe(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleUpdateMe(w http.ResponseWriter, r *http.Request) {
 	uid := currentUserID(r)
+	r.Body = http.MaxBytesReader(w, r.Body, 64<<10)
 	var req struct {
 		DisplayName string `json:"display_name"`
 	}
