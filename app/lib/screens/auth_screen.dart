@@ -68,8 +68,19 @@ class _AuthScreenState extends ConsumerState<AuthScreen> {
                     mainAxisSize: MainAxisSize.min,
                     crossAxisAlignment: CrossAxisAlignment.stretch,
                     children: [
+                      Center(
+                        child: ClipRRect(
+                          borderRadius: BorderRadius.circular(22),
+                          child: Image.asset(
+                            'assets/icon.png',
+                            width: 96,
+                            height: 96,
+                          ),
+                        ),
+                      ),
+                      const SizedBox(height: 12),
                       const Text(
-                        '📖 ことばログ',
+                        'ことばログ',
                         textAlign: TextAlign.center,
                         style: TextStyle(
                           fontSize: 28,

@@ -1,11 +1,11 @@
 {
-    "name": "kotobalog",
-    "short_name": "kotobalog",
+    "name": "ことばログ",
+    "short_name": "ことばログ",
     "start_url": ".",
     "display": "standalone",
-    "background_color": "#0175C2",
-    "theme_color": "#0175C2",
-    "description": "A new Flutter project.",
+    "background_color": "#F6EEDB",
+    "theme_color": "#E65100",
+    "description": "お子さまが話したはじめての言葉やかわいい言い間違いを家族で記録しよう",
     "orientation": "portrait-primary",
     "prefer_related_applications": false,
     "icons": [
