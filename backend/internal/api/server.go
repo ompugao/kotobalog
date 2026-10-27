@@ -147,6 +147,7 @@ func (s *Server) registerRoutes() {
 	s.router.HandleFunc("POST /api/notebooks/{id}/entries", s.requireAuth(s.handleCreateEntry))
 	s.router.HandleFunc("PUT /api/notebooks/{id}/entries/{entryId}", s.requireAuth(s.handleUpdateEntry))
 	s.router.HandleFunc("DELETE /api/notebooks/{id}/entries/{entryId}", s.requireAuth(s.handleDeleteEntry))
+	s.router.HandleFunc("POST /api/notebooks/{id}/entries/{entryId}/restore", s.requireAuth(s.handleRestoreEntry))
 	s.router.HandleFunc("GET /api/notebooks/{id}/entries/{entryId}/audio", s.requireAuth(s.handleGetEntryAudio))
 
 	// Static files for Flutter Web if StaticDir exists

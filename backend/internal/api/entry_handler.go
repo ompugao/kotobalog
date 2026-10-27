@@ -38,15 +38,21 @@ func (s *Server) handleListEntries(w http.ResponseWriter, r *http.Request) {
 
 	q := strings.TrimSpace(r.URL.Query().Get("q"))
 	month := strings.TrimSpace(r.URL.Query().Get("month")) // YYYY-MM
+	onlyDeleted := r.URL.Query().Get("deleted") == "1" || r.URL.Query().Get("deleted") == "true"
 
 	query := `
 		SELECT e.id, e.notebook_id, e.created_by, COALESCE(u.display_name, '家族'),
 		       e.word, e.meaning, e.audio_path, e.audio_mime, e.audio_duration_ms,
-		       e.spoken_at, e.created_at
+		       e.spoken_at, e.created_at, e.deleted_at
 		FROM word_entries e
 		LEFT JOIN users u ON u.id = e.created_by
 		WHERE e.notebook_id = ?
 	`
+	if onlyDeleted {
+		query += ` AND e.deleted_at IS NOT NULL`
+	} else {
+		query += ` AND e.deleted_at IS NULL`
+	}
 	args := []any{notebookID}
 
 	if q != "" {
@@ -60,7 +66,11 @@ func (s *Server) handleListEntries(w http.ResponseWriter, r *http.Request) {
 		args = append(args, month)
 	}
 
-	query += ` ORDER BY e.spoken_at DESC, e.created_at DESC`
+	if onlyDeleted {
+		query += ` ORDER BY e.deleted_at DESC, e.spoken_at DESC`
+	} else {
+		query += ` ORDER BY e.spoken_at DESC, e.created_at DESC`
+	}
 
 	rows, err := s.db.Query(query, args...)
 	if err != nil {
@@ -73,12 +83,17 @@ func (s *Server) handleListEntries(w http.ResponseWriter, r *http.Request) {
 	for rows.Next() {
 		var e models.WordEntry
 		var audioPath string
+		var deletedAt sql.NullTime
 		if err := rows.Scan(
 			&e.ID, &e.NotebookID, &e.CreatedBy, &e.CreatorName,
 			&e.Word, &e.Meaning, &audioPath, &e.AudioMime, &e.AudioDurationMs,
-			&e.SpokenAt, &e.CreatedAt,
+			&e.SpokenAt, &e.CreatedAt, &deletedAt,
 		); err != nil {
 			continue
+		}
+		if deletedAt.Valid {
+			t := deletedAt.Time
+			e.DeletedAt = &t
 		}
 		e.HasAudio = audioPath != ""
 		entries = append(entries, e)
@@ -269,20 +284,25 @@ func (s *Server) handleCreateEntry(w http.ResponseWriter, r *http.Request) {
 func (s *Server) getEntryByID(notebookID, entryID string) (*models.WordEntry, error) {
 	var e models.WordEntry
 	var audioPath string
+	var deletedAt sql.NullTime
 	err := s.db.QueryRow(`
 		SELECT e.id, e.notebook_id, e.created_by, COALESCE(u.display_name, '家族'),
 		       e.word, e.meaning, e.audio_path, e.audio_mime, e.audio_duration_ms,
-		       e.spoken_at, e.created_at
+		       e.spoken_at, e.created_at, e.deleted_at
 		FROM word_entries e
 		LEFT JOIN users u ON u.id = e.created_by
 		WHERE e.notebook_id = ? AND e.id = ?
 	`, notebookID, entryID).Scan(
 		&e.ID, &e.NotebookID, &e.CreatedBy, &e.CreatorName,
 		&e.Word, &e.Meaning, &audioPath, &e.AudioMime, &e.AudioDurationMs,
-		&e.SpokenAt, &e.CreatedAt,
+		&e.SpokenAt, &e.CreatedAt, &deletedAt,
 	)
 	if err != nil {
 		return nil, err
+	}
+	if deletedAt.Valid {
+		t := deletedAt.Time
+		e.DeletedAt = &t
 	}
 	e.HasAudio = audioPath != ""
 	return &e, nil
@@ -397,6 +417,7 @@ func (s *Server) handleDeleteEntry(w http.ResponseWriter, r *http.Request) {
 	uid := currentUserID(r)
 	notebookID := r.PathValue("id")
 	entryID := r.PathValue("entryId")
+	permanent := r.URL.Query().Get("permanent") == "1" || r.URL.Query().Get("permanent") == "true"
 
 	ok, err := s.isNotebookMember(notebookID, uid)
 	if err != nil || !ok {
@@ -411,17 +432,57 @@ func (s *Server) handleDeleteEntry(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	_, err = s.db.Exec(`DELETE FROM word_entries WHERE notebook_id = ? AND id = ?`, notebookID, entryID)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "削除に失敗しました")
+	if permanent {
+		_, err = s.db.Exec(`DELETE FROM word_entries WHERE notebook_id = ? AND id = ?`, notebookID, entryID)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "完全削除に失敗しました")
+			return
+		}
+		if audioPath != "" {
+			_ = os.Remove(filepath.Join(s.cfg.AudioDir, audioPath))
+		}
+		writeJSON(w, http.StatusOK, map[string]string{"status": "permanently_deleted"})
 		return
 	}
 
-	if audioPath != "" {
-		_ = os.Remove(filepath.Join(s.cfg.AudioDir, audioPath))
+	now := time.Now().UTC()
+	_, err = s.db.Exec(`UPDATE word_entries SET deleted_at = ? WHERE notebook_id = ? AND id = ?`, now, notebookID, entryID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "ゴミ箱への移動に失敗しました")
+		return
 	}
 
-	writeJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
+	writeJSON(w, http.StatusOK, map[string]string{"status": "trashed"})
+}
+
+func (s *Server) handleRestoreEntry(w http.ResponseWriter, r *http.Request) {
+	uid := currentUserID(r)
+	notebookID := r.PathValue("id")
+	entryID := r.PathValue("entryId")
+
+	ok, err := s.isNotebookMember(notebookID, uid)
+	if err != nil || !ok {
+		writeError(w, http.StatusForbidden, "このことば帳へのアクセス権限がありません")
+		return
+	}
+
+	res, err := s.db.Exec(`UPDATE word_entries SET deleted_at = NULL WHERE notebook_id = ? AND id = ?`, notebookID, entryID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "復元に失敗しました")
+		return
+	}
+	affected, _ := res.RowsAffected()
+	if affected == 0 {
+		writeError(w, http.StatusNotFound, "ことばが見つかりません")
+		return
+	}
+
+	entry, err := s.getEntryByID(notebookID, entryID)
+	if err != nil {
+		writeError(w, http.StatusNotFound, "ことばが見つかりません")
+		return
+	}
+	writeJSON(w, http.StatusOK, entry)
 }
 
 func (s *Server) handleGetEntryAudio(w http.ResponseWriter, r *http.Request) {

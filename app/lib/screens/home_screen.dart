@@ -5,6 +5,7 @@ import '../widgets/calendar_view.dart';
 import '../widgets/notebook_sheets.dart';
 import '../widgets/record_entry_sheet.dart';
 import '../widgets/timeline_view.dart';
+import '../widgets/trash_sheet.dart';
 
 class HomeScreen extends ConsumerStatefulWidget {
   const HomeScreen({super.key});
@@ -107,9 +108,18 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
             icon: const Icon(Icons.menu_book_outlined),
           ),
           PopupMenuButton<String>(
-            tooltip: 'アカウントメニュー',
+            tooltip: 'アカウント・ことば帳メニュー',
             onSelected: (value) {
-              if (value == 'rename') {
+              if (value == 'trash' && nb != null) {
+                showModalBottomSheet(
+                  context: context,
+                  isScrollControlled: true,
+                  shape: const RoundedRectangleBorder(
+                    borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
+                  ),
+                  builder: (_) => TrashSheet(notebook: nb),
+                );
+              } else if (value == 'rename') {
                 showDialog(
                   context: context,
                   builder: (_) => EditDisplayNameDialog(
@@ -143,6 +153,17 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
                 ),
               ),
               const PopupMenuDivider(),
+              if (nb != null)
+                const PopupMenuItem(
+                  value: 'trash',
+                  child: Row(
+                    children: [
+                      Icon(Icons.restore_from_trash, size: 18),
+                      SizedBox(width: 8),
+                      Text('ゴミ箱（削除したことばを復元）'),
+                    ],
+                  ),
+                ),
               const PopupMenuItem(
                 value: 'rename',
                 child: Row(

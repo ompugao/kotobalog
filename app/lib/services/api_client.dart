@@ -170,6 +170,7 @@ class ApiClient {
     String notebookId, {
     String? query,
     String? month,
+    bool deleted = false,
   }) async {
     final params = <String, String>{};
     if (query != null && query.trim().isNotEmpty) {
@@ -177,6 +178,9 @@ class ApiClient {
     }
     if (month != null && month.trim().isNotEmpty) {
       params['month'] = month.trim();
+    }
+    if (deleted) {
+      params['deleted'] = '1';
     }
     final res = await http.get(
       _uri('/api/notebooks/$notebookId/entries',
@@ -246,12 +250,27 @@ class ApiClient {
     return WordEntry.fromJson(_decodeObj(res));
   }
 
-  Future<void> deleteEntry(String notebookId, String entryId) async {
+  Future<void> deleteEntry(
+    String notebookId,
+    String entryId, {
+    bool permanent = false,
+  }) async {
     final res = await http.delete(
-      _uri('/api/notebooks/$notebookId/entries/$entryId'),
+      _uri(
+        '/api/notebooks/$notebookId/entries/$entryId',
+        permanent ? {'permanent': '1'} : null,
+      ),
       headers: _headers(),
     );
     _decodeObj(res);
+  }
+
+  Future<WordEntry> restoreEntry(String notebookId, String entryId) async {
+    final res = await http.post(
+      _uri('/api/notebooks/$notebookId/entries/$entryId/restore'),
+      headers: _headers(),
+    );
+    return WordEntry.fromJson(_decodeObj(res));
   }
 
   String audioUrl(String notebookId, String entryId) {

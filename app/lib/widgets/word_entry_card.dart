@@ -192,27 +192,84 @@ class _WordEntryCardState extends ConsumerState<WordEntryCard> {
                     if (val == 'edit') {
                       _openEditSheet();
                     } else if (val == 'delete') {
+                      if (_isPlaying) {
+                        await _player?.stop();
+                        if (mounted) setState(() => _isPlaying = false);
+                      }
+                      if (!context.mounted) return;
+                      bool confirmedCheck = false;
                       final ok = await showDialog<bool>(
                         context: context,
-                        builder: (ctx) => AlertDialog(
-                          title: const Text('記録を削除しますか？'),
-                          content: Text('「${entry.word}」の記録を削除します。'),
-                          actions: [
-                            TextButton(
-                              onPressed: () => Navigator.of(ctx).pop(false),
-                              child: const Text('キャンセル'),
+                        builder: (ctx) => StatefulBuilder(
+                          builder: (ctx, setDialogState) => AlertDialog(
+                            title: const Row(
+                              children: [
+                                Icon(Icons.delete_outline, color: Colors.red),
+                                SizedBox(width: 8),
+                                Flexible(child: Text('記録をゴミ箱へ移動しますか？')),
+                              ],
                             ),
-                            FilledButton(
-                              onPressed: () => Navigator.of(ctx).pop(true),
-                              child: const Text('削除する'),
+                            content: Column(
+                              mainAxisSize: MainAxisSize.min,
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Text(
+                                  '「${entry.word}」の記録をゴミ箱へ移動します。\n万が一のときは、右上のメニューの「ゴミ箱」からいつでも復元できます。',
+                                ),
+                                const SizedBox(height: 12),
+                                CheckboxListTile(
+                                  contentPadding: EdgeInsets.zero,
+                                  controlAffinity:
+                                      ListTileControlAffinity.leading,
+                                  value: confirmedCheck,
+                                  onChanged: (v) => setDialogState(
+                                    () => confirmedCheck = v ?? false,
+                                  ),
+                                  title: Text(
+                                    '「${entry.word}」を削除（ゴミ箱へ移動）する',
+                                    style: const TextStyle(
+                                      fontSize: 13,
+                                      fontWeight: FontWeight.bold,
+                                    ),
+                                  ),
+                                ),
+                              ],
                             ),
-                          ],
+                            actions: [
+                              TextButton(
+                                onPressed: () => Navigator.of(ctx).pop(false),
+                                child: const Text('キャンセル'),
+                              ),
+                              FilledButton(
+                                style: FilledButton.styleFrom(
+                                  backgroundColor: Colors.red.shade600,
+                                  foregroundColor: Colors.white,
+                                ),
+                                onPressed: confirmedCheck
+                                    ? () => Navigator.of(ctx).pop(true)
+                                    : null,
+                                child: const Text('ゴミ箱へ移動'),
+                              ),
+                            ],
+                          ),
                         ),
                       );
                       if (ok == true) {
-                        await ref
-                            .read(appProvider.notifier)
-                            .deleteEntry(entry.id);
+                        if (!context.mounted) return;
+                        final messenger = ScaffoldMessenger.maybeOf(context);
+                        final notifier = ref.read(appProvider.notifier);
+                        await notifier.deleteEntry(entry.id);
+                        messenger?.showSnackBar(
+                          SnackBar(
+                            content: Text('「${entry.word}」をゴミ箱に移動しました'),
+                            action: SnackBarAction(
+                              label: '元に戻す',
+                              onPressed: () {
+                                notifier.restoreEntry(entry.id);
+                              },
+                            ),
+                          ),
+                        );
                       }
                     }
                   },
@@ -233,7 +290,7 @@ class _WordEntryCardState extends ConsumerState<WordEntryCard> {
                         children: [
                           Icon(Icons.delete_outline, color: Colors.red, size: 18),
                           SizedBox(width: 8),
-                          Text('削除する'),
+                          Text('ゴミ箱へ移動...'),
                         ],
                       ),
                     ),

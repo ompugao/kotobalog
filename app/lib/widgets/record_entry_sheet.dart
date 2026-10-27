@@ -668,15 +668,100 @@ class _RecordEntrySheetState extends ConsumerState<RecordEntrySheet> {
                 ),
                 const SizedBox(width: 6),
                 OutlinedButton.icon(
-                  onPressed: () => _startRecording(autoStart: false),
+                  onPressed: () async {
+                    final ok = await showDialog<bool>(
+                      context: context,
+                      builder: (ctx) => AlertDialog(
+                        title: const Text('音声を録り直しますか？'),
+                        content: const Text(
+                          '新しい録音を開始します。（保存するまでは元の録音済み音声は消えません）',
+                        ),
+                        actions: [
+                          TextButton(
+                            onPressed: () => Navigator.of(ctx).pop(false),
+                            child: const Text('キャンセル'),
+                          ),
+                          FilledButton(
+                            onPressed: () => Navigator.of(ctx).pop(true),
+                            child: const Text('録り直す'),
+                          ),
+                        ],
+                      ),
+                    );
+                    if (ok == true) {
+                      await _startRecording(autoStart: false);
+                    }
+                  },
                   icon: const Icon(Icons.mic, color: Colors.red, size: 16),
                   label: const Text('録り直す'),
                 ),
                 IconButton(
                   tooltip: '音声を削除',
-                  onPressed: () {
-                    _stopPreview();
-                    setState(() => _keepExistingAudio = false);
+                  onPressed: () async {
+                    bool confirmedCheck = false;
+                    final ok = await showDialog<bool>(
+                      context: context,
+                      builder: (ctx) => StatefulBuilder(
+                        builder: (ctx, setDialogState) => AlertDialog(
+                          title: const Row(
+                            children: [
+                              Icon(Icons.warning_amber_rounded,
+                                  color: Colors.red),
+                              SizedBox(width: 8),
+                              Flexible(child: Text('録音済みの音声を外しますか？')),
+                            ],
+                          ),
+                          content: Column(
+                            mainAxisSize: MainAxisSize.min,
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              const Text(
+                                'この記録から音声を外します。このまま「変更を保存する」を押すと、録音された音声データが削除されます。',
+                              ),
+                              const SizedBox(height: 12),
+                              CheckboxListTile(
+                                contentPadding: EdgeInsets.zero,
+                                controlAffinity:
+                                    ListTileControlAffinity.leading,
+                                value: confirmedCheck,
+                                onChanged: (v) => setDialogState(
+                                  () => confirmedCheck = v ?? false,
+                                ),
+                                title: const Text(
+                                  '録音済みの音声を削除することに同意する',
+                                  style: TextStyle(
+                                    fontSize: 13,
+                                    fontWeight: FontWeight.bold,
+                                  ),
+                                ),
+                              ),
+                            ],
+                          ),
+                          actions: [
+                            TextButton(
+                              onPressed: () => Navigator.of(ctx).pop(false),
+                              child: const Text('キャンセル'),
+                            ),
+                            FilledButton(
+                              style: FilledButton.styleFrom(
+                                backgroundColor: Colors.red.shade600,
+                                foregroundColor: Colors.white,
+                              ),
+                              onPressed: confirmedCheck
+                                  ? () => Navigator.of(ctx).pop(true)
+                                  : null,
+                              child: const Text('音声を外す'),
+                            ),
+                          ],
+                        ),
+                      ),
+                    );
+                    if (ok == true) {
+                      await _stopPreview();
+                      if (mounted) {
+                        setState(() => _keepExistingAudio = false);
+                      }
+                    }
                   },
                   icon: const Icon(Icons.delete_outline),
                 ),

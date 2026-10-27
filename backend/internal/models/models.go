@@ -32,15 +32,16 @@ type Notebook struct {
 }
 
 type WordEntry struct {
-	ID              string    `json:"id"`
-	NotebookID      string    `json:"notebook_id"`
-	CreatedBy       string    `json:"created_by"`
-	CreatorName     string    `json:"creator_name"`
-	Word            string    `json:"word"`
-	Meaning         string    `json:"meaning"`
-	HasAudio        bool      `json:"has_audio"`
-	AudioMime       string    `json:"audio_mime,omitempty"`
-	AudioDurationMs int       `json:"audio_duration_ms"`
-	SpokenAt        time.Time `json:"spoken_at"`
-	CreatedAt       time.Time `json:"created_at"`
+	ID              string     `json:"id"`
+	NotebookID      string     `json:"notebook_id"`
+	CreatedBy       string     `json:"created_by"`
+	CreatorName     string     `json:"creator_name"`
+	Word            string     `json:"word"`
+	Meaning         string     `json:"meaning"`
+	HasAudio        bool       `json:"has_audio"`
+	AudioMime       string     `json:"audio_mime,omitempty"`
+	AudioDurationMs int        `json:"audio_duration_ms"`
+	SpokenAt        time.Time  `json:"spoken_at"`
+	CreatedAt       time.Time  `json:"created_at"`
+	DeletedAt       *time.Time `json:"deleted_at,omitempty"`
 }

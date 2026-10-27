@@ -77,6 +77,7 @@ func migrate(database *sql.DB) error {
 		audio_duration_ms INTEGER NOT NULL DEFAULT 0,
 		spoken_at DATETIME NOT NULL,
 		created_at DATETIME NOT NULL,
+		deleted_at DATETIME,
 		FOREIGN KEY (notebook_id) REFERENCES notebooks(id) ON DELETE CASCADE,
 		FOREIGN KEY (created_by) REFERENCES users(id) ON DELETE CASCADE
 	);

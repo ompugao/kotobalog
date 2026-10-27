@@ -163,6 +163,36 @@ func TestAllowlistAndSharedNotebooksFlow(t *testing.T) {
 		t.Fatalf("unexpected updated entry: %+v", updatedEntry)
 	}
 
+	// 6.6 Soft delete (trash) and restore entry safeguard
+	delRec := doJSON(t, srv, http.MethodDelete, "/api/notebooks/"+nb.ID+"/entries/"+createdEntry.ID, mamaToken, nil)
+	if delRec.Code != http.StatusOK {
+		t.Fatalf("expected 200 on soft delete, got %d", delRec.Code)
+	}
+	// Active list should not include soft-deleted entry
+	activeRec := doJSON(t, srv, http.MethodGet, "/api/notebooks/"+nb.ID+"/entries", mamaToken, nil)
+	var activeEntries []models.WordEntry
+	_ = json.NewDecoder(activeRec.Body).Decode(&activeEntries)
+	if len(activeEntries) != 0 {
+		t.Fatalf("expected 0 active entries after soft delete, got %d", len(activeEntries))
+	}
+	// Trash list (?deleted=1) should include soft-deleted entry and preserve audio
+	trashRec := doJSON(t, srv, http.MethodGet, "/api/notebooks/"+nb.ID+"/entries?deleted=1", mamaToken, nil)
+	var trashedEntries []models.WordEntry
+	_ = json.NewDecoder(trashRec.Body).Decode(&trashedEntries)
+	if len(trashedEntries) != 1 || trashedEntries[0].DeletedAt == nil || !trashedEntries[0].HasAudio {
+		t.Fatalf("expected 1 trashed entry with DeletedAt and HasAudio, got %+v", trashedEntries)
+	}
+	// Restore entry
+	restoreRec := doJSON(t, srv, http.MethodPost, "/api/notebooks/"+nb.ID+"/entries/"+createdEntry.ID+"/restore", mamaToken, nil)
+	if restoreRec.Code != http.StatusOK {
+		t.Fatalf("expected 200 on restore entry, got %d", restoreRec.Code)
+	}
+	activeAfterRestoreRec := doJSON(t, srv, http.MethodGet, "/api/notebooks/"+nb.ID+"/entries", mamaToken, nil)
+	_ = json.NewDecoder(activeAfterRestoreRec.Body).Decode(&activeEntries)
+	if len(activeEntries) != 1 || activeEntries[0].DeletedAt != nil {
+		t.Fatalf("expected 1 active entry after restore, got %+v", activeEntries)
+	}
+
 	// 7. Uploading malicious audio_mime (e.g., text/html) must be sanitized to audio/wav
 	rec = doJSON(t, srv, http.MethodPost, "/api/notebooks/"+nb.ID+"/entries", papaToken, map[string]any{
 		"word":         "てすと",

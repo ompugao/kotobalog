@@ -10,6 +10,7 @@ class WordEntry {
   final int audioDurationMs;
   final DateTime spokenAt;
   final DateTime createdAt;
+  final DateTime? deletedAt;
 
   const WordEntry({
     required this.id,
@@ -23,9 +24,11 @@ class WordEntry {
     required this.audioDurationMs,
     required this.spokenAt,
     required this.createdAt,
+    this.deletedAt,
   });
 
   factory WordEntry.fromJson(Map<String, dynamic> json) {
+    final rawDeletedAt = json['deleted_at'] as String?;
     return WordEntry(
       id: json['id'] as String? ?? '',
       notebookId: json['notebook_id'] as String? ?? '',
@@ -40,6 +43,9 @@ class WordEntry {
           DateTime.now(),
       createdAt: DateTime.tryParse(json['created_at'] as String? ?? '')?.toLocal() ??
           DateTime.now(),
+      deletedAt: rawDeletedAt != null
+          ? DateTime.tryParse(rawDeletedAt)?.toLocal()
+          : null,
     );
   }
 }

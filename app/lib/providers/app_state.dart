@@ -365,13 +365,27 @@ class AppNotifier extends Notifier<AppState> {
     return updated;
   }
 
-  Future<void> deleteEntry(String entryId) async {
+  Future<void> deleteEntry(String entryId, {bool permanent = false}) async {
     final nb = state.currentNotebook;
     if (nb == null) return;
-    await api.deleteEntry(nb.id, entryId);
+    await api.deleteEntry(nb.id, entryId, permanent: permanent);
     state = state.copyWith(
       entries: state.entries.where((e) => e.id != entryId).toList(),
     );
+  }
+
+  Future<WordEntry?> restoreEntry(String entryId) async {
+    final nb = state.currentNotebook;
+    if (nb == null) return null;
+    final restored = await api.restoreEntry(nb.id, entryId);
+    await refreshEntries();
+    return restored;
+  }
+
+  Future<List<WordEntry>> listTrashedEntries() async {
+    final nb = state.currentNotebook;
+    if (nb == null) return const [];
+    return api.listEntries(nb.id, deleted: true);
   }
 }
 
