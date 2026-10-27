@@ -124,8 +124,8 @@ class _WordEntryCardState extends ConsumerState<WordEntryCard> {
                               color: Color(0xFF3E2723),
                             ),
                           ),
-                          const SizedBox(height: 6),
-                          if (entry.meaning.isNotEmpty)
+                          if (entry.meaning.isNotEmpty) ...[
+                            const SizedBox(height: 6),
                             Text(
                               entry.meaning,
                               style: TextStyle(
@@ -133,26 +133,8 @@ class _WordEntryCardState extends ConsumerState<WordEntryCard> {
                                 color: Colors.brown.shade700,
                                 height: 1.4,
                               ),
-                            )
-                          else
-                            Row(
-                              mainAxisSize: MainAxisSize.min,
-                              children: [
-                                Icon(
-                                  Icons.edit_note,
-                                  size: 15,
-                                  color: Colors.brown.shade400,
-                                ),
-                                const SizedBox(width: 4),
-                                Text(
-                                  '記録メモを追加...',
-                                  style: TextStyle(
-                                    fontSize: 13,
-                                    color: Colors.brown.shade400,
-                                  ),
-                                ),
-                              ],
                             ),
+                          ],
                         ],
                       ),
                     ),
