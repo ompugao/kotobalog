@@ -1,4 +1,6 @@
 # ことばログ (KotobaLog) 📖
+<img loading="lazy" width="200" height="200" src="./app/assets/icon.png" alt="icon" />
+
 
 お子さまが話した「ことば」「意味・エピソード」「録音（声）」「話した日時」の4点を記録し、当時の月齢・年齢とともにタイムラインやカレンダーで振り返ることができる **Flutter (Web / Android 両対応) + Go バックエンド** の家族共有アプリケーションです。
 
