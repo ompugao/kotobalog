@@ -6,8 +6,10 @@ backend/web_dist/
 *.db-shm
 *.db-wal
 
-# Env
+# Env & Local config
 .env
+mise.local.toml
+*.local.toml
 
 # Go
 backend/kotobalog-server
