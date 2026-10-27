@@ -122,8 +122,13 @@ class AppNotifier extends Notifier<AppState> {
 
   Future<void> _initialize() async {
     final prefs = await SharedPreferences.getInstance();
-    final savedUrl =
-        prefs.getString(_prefServerUrl) ?? ApiClient.defaultBaseUrl();
+    final defaultUrl = ApiClient.defaultBaseUrl();
+    String savedUrl = prefs.getString(_prefServerUrl) ?? defaultUrl;
+    if (savedUrl == 'https://kotobalog.example.com' &&
+        defaultUrl != 'https://kotobalog.example.com') {
+      savedUrl = defaultUrl;
+      await prefs.setString(_prefServerUrl, savedUrl);
+    }
     String? savedToken = prefs.getString(_prefToken);
     final savedNotebookId = prefs.getString(_prefNotebookId);
     String? oauthErrorMsg;

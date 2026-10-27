@@ -19,6 +19,11 @@ class ApiClient {
 
   ApiClient({required this.baseUrl, this.token});
 
+  static const String _envServerUrl = String.fromEnvironment(
+    'SERVER_URL',
+    defaultValue: 'https://kotobalog.example.com',
+  );
+
   static String defaultBaseUrl() {
     if (kIsWeb) {
       final origin = Uri.base.origin;
@@ -28,7 +33,7 @@ class ApiClient {
       }
       return origin;
     }
-    return 'https://kotobalog.example.com';
+    return _envServerUrl;
   }
 
   Map<String, String> _headers() {

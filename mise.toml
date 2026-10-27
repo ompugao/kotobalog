@@ -23,7 +23,7 @@ run = "flutter build web --release -o ../backend/web_dist"
 [tasks.build-android]
 description = "Build Flutter Android release APK"
 dir = "app"
-run = "flutter build apk --release"
+run = 'flutter build apk --release ${KOTOBALOG_SERVER_URL:+--dart-define=SERVER_URL=$KOTOBALOG_SERVER_URL}'
 
 [tasks.dev-backend]
 description = "Start Go backend server"
