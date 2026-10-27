@@ -97,5 +97,9 @@ func migrate(database *sql.DB) error {
 	if err != nil && !strings.Contains(err.Error(), "duplicate column") {
 		return err
 	}
+	_, err = database.Exec(`ALTER TABLE word_entries ADD COLUMN deleted_at DATETIME`)
+	if err != nil && !strings.Contains(err.Error(), "duplicate column") {
+		return err
+	}
 	return nil
 }
