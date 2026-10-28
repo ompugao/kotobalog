@@ -7,6 +7,8 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -20,7 +22,11 @@ func setupTestServer(t *testing.T, allowlist string) *Server {
 	if err != nil {
 		t.Fatalf("failed to open in-memory db: %v", err)
 	}
-	t.Cleanup(func() { database.Close() })
+	t.Cleanup(func() {
+		if sqlDB, err := database.DB(); err == nil {
+			_ = sqlDB.Close()
+		}
+	})
 
 	srv, err := NewServer(database, Config{
 		JWTSecret: "test-secret",
@@ -270,4 +276,83 @@ func TestOAuthStateCSRFAndOpenRedirectProtection(t *testing.T) {
 	if _, err := srv.upsertOAuthUser("github", "9999", "github:ompugao", "impersonator@example.com", "偽物", ""); err == nil {
 		t.Fatalf("expected error when a different github_id claims an existing bound identity")
 	}
+}
+
+func TestDryRunCopiedNASDatabase(t *testing.T) {
+	nasDBPath := os.Getenv("NAS_DRYRUN_DB")
+	if nasDBPath == "" {
+		t.Skip("NAS_DRYRUN_DB not set; skipping NAS live copy dry-run")
+	}
+
+	database, err := db.Open(nasDBPath)
+	if err != nil {
+		t.Fatalf("db.Open on NAS copy failed: %v", err)
+	}
+	defer func() {
+		if sqlDB, err := database.DB(); err == nil {
+			_ = sqlDB.Close()
+		}
+	}()
+
+	// Verify backup was created
+	backups, err := filepath.Glob(nasDBPath + ".bak-*")
+	if err != nil || len(backups) == 0 {
+		t.Fatalf("expected backup file for NAS DB, got %v (err=%v)", backups, err)
+	}
+
+	var users []models.User
+	if err := database.Order("created_at ASC").Find(&users).Error; err != nil {
+		t.Fatalf("query users failed: %v", err)
+	}
+	var notebooks []models.Notebook
+	if err := database.Order("created_at ASC").Find(&notebooks).Error; err != nil {
+		t.Fatalf("query notebooks failed: %v", err)
+	}
+	var totalEntries int64
+	if err := database.Model(&models.WordEntry{}).Count(&totalEntries).Error; err != nil {
+		t.Fatalf("count word_entries failed: %v", err)
+	}
+	t.Logf("Migrated NAS DB successfully: users=%d, notebooks=%d, word_entries=%d, backup=%s",
+		len(users), len(notebooks), totalEntries, backups[0])
+
+	if len(users) < 2 || len(notebooks) < 1 || totalEntries < 58 {
+		t.Fatalf("unexpected counts after NAS DB migration: users=%d notebooks=%d entries=%d", len(users), len(notebooks), totalEntries)
+	}
+
+	// Verify API endpoints against migrated NAS DB
+	allowIdentities := []string{}
+	for _, u := range users {
+		if u.Identity != "" {
+			allowIdentities = append(allowIdentities, u.Identity)
+		}
+	}
+	srv, err := NewServer(database, Config{
+		JWTSecret: "test-secret-for-nas-dryrun-verification",
+		Allowlist: strings.Join(allowIdentities, ","),
+		AudioDir:  t.TempDir(),
+	})
+	if err != nil {
+		t.Fatalf("NewServer failed: %v", err)
+	}
+
+	tok, err := srv.generateToken(users[0].ID, users[0].Identity)
+	if err != nil {
+		t.Fatalf("generateToken failed: %v", err)
+	}
+
+	nbRec := doJSON(t, srv, http.MethodGet, "/api/notebooks", tok, nil)
+	if nbRec.Code != http.StatusOK {
+		t.Fatalf("GET /api/notebooks returned %d: %s", nbRec.Code, nbRec.Body.String())
+	}
+
+	entriesRec := doJSON(t, srv, http.MethodGet, "/api/notebooks/"+notebooks[0].ID+"/entries", tok, nil)
+	if entriesRec.Code != http.StatusOK {
+		t.Fatalf("GET /api/notebooks/%s/entries returned %d: %s", notebooks[0].ID, entriesRec.Code, entriesRec.Body.String())
+	}
+	var apiEntries []models.WordEntry
+	if err := json.NewDecoder(entriesRec.Body).Decode(&apiEntries); err != nil {
+		t.Fatalf("decode entries failed: %v", err)
+	}
+	t.Logf("API returned %d active entries for notebook %q (first entry word=%q, creator=%q, spoken_at=%v)",
+		len(apiEntries), notebooks[0].ChildName, apiEntries[0].Word, apiEntries[0].CreatorName, apiEntries[0].SpokenAt)
 }

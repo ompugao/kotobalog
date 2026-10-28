@@ -27,7 +27,9 @@ func main() {
 	if err != nil {
 		log.Fatalf("failed to initialize database: %v", err)
 	}
-	defer database.Close()
+	if sqlDB, err := database.DB(); err == nil {
+		defer sqlDB.Close()
+	}
 
 	allowlist := os.Getenv("ALLOWLIST")
 	if allowlist == "" {

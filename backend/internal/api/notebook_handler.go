@@ -19,31 +19,29 @@ type createNotebookRequest struct {
 
 func (s *Server) isNotebookMember(notebookID, userID string) (bool, error) {
 	// With ALLOWLIST mode, any authenticated user who is in ALLOWLIST can access all notebooks.
-	var count int
-	err := s.db.QueryRow(`SELECT COUNT(1) FROM notebooks WHERE id = ?`, notebookID).Scan(&count)
+	var count int64
+	err := s.db.Model(&models.Notebook{}).Where("id = ?", notebookID).Count(&count).Error
 	return count > 0, err
 }
 
 func (s *Server) listAllowlistedMembers() ([]models.NotebookMember, error) {
-	rows, err := s.db.Query(`
-		SELECT id, identity, display_name, email, avatar_url, created_at
-		FROM users
-		ORDER BY created_at ASC
-	`)
-	if err != nil {
+	var users []models.User
+	if err := s.db.Order("created_at ASC").Find(&users).Error; err != nil {
 		return nil, err
 	}
-	defer rows.Close()
 
 	members := []models.NotebookMember{}
-	for rows.Next() {
-		var m models.NotebookMember
-		if err := rows.Scan(&m.UserID, &m.Identity, &m.DisplayName, &m.Email, &m.AvatarURL, &m.JoinedAt); err != nil {
-			continue
-		}
-		if m.Identity == "dev:local" || s.allow.Allows(m.Identity) {
-			m.Role = "family"
-			members = append(members, m)
+	for _, u := range users {
+		if u.Identity == "dev:local" || s.allow.Allows(u.Identity) {
+			members = append(members, models.NotebookMember{
+				UserID:      u.ID,
+				Identity:    u.Identity,
+				DisplayName: u.DisplayName,
+				Email:       u.Email,
+				AvatarURL:   u.AvatarURL,
+				Role:        "family",
+				JoinedAt:    u.CreatedAt,
+			})
 		}
 	}
 	return members, nil
@@ -51,11 +49,7 @@ func (s *Server) listAllowlistedMembers() ([]models.NotebookMember, error) {
 
 func (s *Server) getNotebookByID(notebookID string) (*models.Notebook, error) {
 	var nb models.Notebook
-	err := s.db.QueryRow(
-		`SELECT id, child_name, birth_date, theme_color, icon_emoji, created_at FROM notebooks WHERE id = ?`,
-		notebookID,
-	).Scan(&nb.ID, &nb.ChildName, &nb.BirthDate, &nb.ThemeColor, &nb.IconEmoji, &nb.CreatedAt)
-	if err != nil {
+	if err := s.db.Where("id = ?", notebookID).First(&nb).Error; err != nil {
 		return nil, err
 	}
 
@@ -74,24 +68,14 @@ func (s *Server) handleListNotebooks(w http.ResponseWriter, r *http.Request) {
 		members = []models.NotebookMember{}
 	}
 
-	rows, err := s.db.Query(`
-		SELECT id, child_name, birth_date, theme_color, icon_emoji, created_at
-		FROM notebooks
-		ORDER BY created_at ASC
-	`)
-	if err != nil {
+	var notebooks []models.Notebook
+	if err := s.db.Order("created_at ASC").Find(&notebooks).Error; err != nil {
 		writeError(w, http.StatusInternalServerError, "ことば帳一覧の取得に失敗しました")
 		return
 	}
-	defer rows.Close()
 
-	notebooks := []models.Notebook{}
-	for rows.Next() {
-		var nb models.Notebook
-		if err := rows.Scan(&nb.ID, &nb.ChildName, &nb.BirthDate, &nb.ThemeColor, &nb.IconEmoji, &nb.CreatedAt); err == nil {
-			nb.Members = members
-			notebooks = append(notebooks, nb)
-		}
+	for i := range notebooks {
+		notebooks[i].Members = members
 	}
 	writeJSON(w, http.StatusOK, notebooks)
 }
@@ -117,19 +101,21 @@ func (s *Server) handleCreateNotebook(w http.ResponseWriter, r *http.Request) {
 		req.IconEmoji = "👶"
 	}
 
-	now := time.Now().UTC()
-	notebookID := uuid.NewString()
+	nbModel := models.Notebook{
+		ID:         uuid.NewString(),
+		ChildName:  req.ChildName,
+		BirthDate:  req.BirthDate,
+		ThemeColor: req.ThemeColor,
+		IconEmoji:  req.IconEmoji,
+		CreatedAt:  time.Now().UTC(),
+	}
 
-	_, err := s.db.Exec(
-		`INSERT INTO notebooks (id, child_name, birth_date, theme_color, icon_emoji, created_at) VALUES (?, ?, ?, ?, ?, ?)`,
-		notebookID, req.ChildName, req.BirthDate, req.ThemeColor, req.IconEmoji, now,
-	)
-	if err != nil {
+	if err := s.db.Create(&nbModel).Error; err != nil {
 		writeError(w, http.StatusInternalServerError, "ことば帳の作成に失敗しました")
 		return
 	}
 
-	nb, err := s.getNotebookByID(notebookID)
+	nb, err := s.getNotebookByID(nbModel.ID)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "作成したことば帳の取得に失敗しました")
 		return
@@ -160,10 +146,12 @@ func (s *Server) handleUpdateNotebook(w http.ResponseWriter, r *http.Request) {
 		req.IconEmoji = "👶"
 	}
 
-	_, err := s.db.Exec(
-		`UPDATE notebooks SET child_name = ?, birth_date = ?, theme_color = ?, icon_emoji = ? WHERE id = ?`,
-		req.ChildName, req.BirthDate, req.ThemeColor, req.IconEmoji, notebookID,
-	)
+	err := s.db.Model(&models.Notebook{}).Where("id = ?", notebookID).Updates(map[string]any{
+		"child_name":  req.ChildName,
+		"birth_date":  req.BirthDate,
+		"theme_color": req.ThemeColor,
+		"icon_emoji":  req.IconEmoji,
+	}).Error
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "ことば帳の更新に失敗しました")
 		return

@@ -3,7 +3,6 @@ package api
 import (
 	"context"
 	"crypto/subtle"
-	"database/sql"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -13,6 +12,8 @@ import (
 	"time"
 
 	"github.com/golang-jwt/jwt/v5"
+	"github.com/ompugao/kotobalog/backend/internal/models"
+	"gorm.io/gorm"
 )
 
 type contextKey string
@@ -52,13 +53,13 @@ type Config struct {
 }
 
 type Server struct {
-	db     *sql.DB
+	db     *gorm.DB
 	cfg    Config
 	allow  Allowlist
 	router *http.ServeMux
 }
 
-func NewServer(database *sql.DB, cfg Config) (*Server, error) {
+func NewServer(database *gorm.DB, cfg Config) (*Server, error) {
 	if cfg.JWTSecret == "" {
 		cfg.JWTSecret = "kotobalog-default-dev-secret-change-me"
 	}
@@ -174,12 +175,12 @@ func (s *Server) registerRoutes() {
 }
 
 func (s *Server) generateToken(userID, identity string) (string, error) {
-	var tokenVersion int
-	_ = s.db.QueryRow(`SELECT token_version FROM users WHERE id = ?`, userID).Scan(&tokenVersion)
+	var user models.User
+	_ = s.db.Select("token_version").Where("id = ?", userID).First(&user).Error
 	claims := jwt.MapClaims{
 		"sub":      userID,
 		"identity": identity,
-		"ver":      tokenVersion,
+		"ver":      user.TokenVersion,
 		"exp":      time.Now().Add(30 * 24 * time.Hour).Unix(),
 		"iat":      time.Now().Unix(),
 	}
@@ -240,10 +241,9 @@ func (s *Server) requireAuth(next http.HandlerFunc) http.HandlerFunc {
 		}
 
 		// Check user still exists, token_version matches, and is still in ALLOWLIST
-		var identity string
-		var dbTokenVer int
-		err = s.db.QueryRow(`SELECT identity, token_version FROM users WHERE id = ?`, sub).Scan(&identity, &dbTokenVer)
-		if err != nil || !s.allow.Allows(identity) {
+		var user models.User
+		err = s.db.Select("identity", "token_version").Where("id = ?", sub).First(&user).Error
+		if err != nil || !s.allow.Allows(user.Identity) {
 			writeError(w, http.StatusForbidden, "ALLOWLISTで許可されていないアカウントです")
 			return
 		}
@@ -251,7 +251,7 @@ func (s *Server) requireAuth(next http.HandlerFunc) http.HandlerFunc {
 		if v, ok := claims["ver"].(float64); ok {
 			claimVer = int(v)
 		}
-		if claimVer != dbTokenVer {
+		if claimVer != user.TokenVersion {
 			writeError(w, http.StatusUnauthorized, "無効化されたトークンです")
 			return
 		}

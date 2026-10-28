@@ -1,9 +1,9 @@
 package api
 
 import (
-	"database/sql"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"os"
@@ -14,6 +14,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/ompugao/kotobalog/backend/internal/models"
+	"gorm.io/gorm"
 )
 
 type entryJSONRequest struct {
@@ -40,63 +41,42 @@ func (s *Server) handleListEntries(w http.ResponseWriter, r *http.Request) {
 	month := strings.TrimSpace(r.URL.Query().Get("month")) // YYYY-MM
 	onlyDeleted := r.URL.Query().Get("deleted") == "1" || r.URL.Query().Get("deleted") == "true"
 
-	query := `
-		SELECT e.id, e.notebook_id, e.created_by, COALESCE(u.display_name, '家族'),
-		       e.word, e.meaning, e.audio_path, e.audio_mime, e.audio_duration_ms,
-		       e.spoken_at, e.created_at, e.deleted_at
-		FROM word_entries e
-		LEFT JOIN users u ON u.id = e.created_by
-		WHERE e.notebook_id = ?
-	`
+	tx := s.db.Table("word_entries e").
+		Select("e.*, COALESCE(u.display_name, '家族') AS creator_name").
+		Joins("LEFT JOIN users u ON u.id = e.created_by").
+		Where("e.notebook_id = ?", notebookID)
+
 	if onlyDeleted {
-		query += ` AND e.deleted_at IS NOT NULL`
+		tx = tx.Where("e.deleted_at IS NOT NULL")
 	} else {
-		query += ` AND e.deleted_at IS NULL`
+		tx = tx.Where("e.deleted_at IS NULL")
 	}
-	args := []any{notebookID}
 
 	if q != "" {
-		query += ` AND (e.word LIKE ? OR e.meaning LIKE ?)`
 		like := "%" + q + "%"
-		args = append(args, like, like)
+		tx = tx.Where("(e.word LIKE ? OR e.meaning LIKE ?)", like, like)
 	}
 
 	if month != "" {
-		query += ` AND strftime('%Y-%m', e.spoken_at) = ?`
-		args = append(args, month)
+		tx = tx.Where("substr(e.spoken_at, 1, 7) = ?", month)
 	}
 
 	if onlyDeleted {
-		query += ` ORDER BY e.deleted_at DESC, e.spoken_at DESC`
+		tx = tx.Order("e.deleted_at DESC, e.spoken_at DESC")
 	} else {
-		query += ` ORDER BY e.spoken_at DESC, e.created_at DESC`
+		tx = tx.Order("e.spoken_at DESC, e.created_at DESC")
 	}
 
-	rows, err := s.db.Query(query, args...)
-	if err != nil {
+	var entries []models.WordEntry
+	if err := tx.Find(&entries).Error; err != nil {
 		writeError(w, http.StatusInternalServerError, "ことば一覧の取得に失敗しました")
 		return
 	}
-	defer rows.Close()
-
-	entries := []models.WordEntry{}
-	for rows.Next() {
-		var e models.WordEntry
-		var audioPath string
-		var deletedAt sql.NullTime
-		if err := rows.Scan(
-			&e.ID, &e.NotebookID, &e.CreatedBy, &e.CreatorName,
-			&e.Word, &e.Meaning, &audioPath, &e.AudioMime, &e.AudioDurationMs,
-			&e.SpokenAt, &e.CreatedAt, &deletedAt,
-		); err != nil {
-			continue
-		}
-		if deletedAt.Valid {
-			t := deletedAt.Time
-			e.DeletedAt = &t
-		}
-		e.HasAudio = audioPath != ""
-		entries = append(entries, e)
+	if entries == nil {
+		entries = []models.WordEntry{}
+	}
+	for i := range entries {
+		entries[i].HasAudio = entries[i].AudioPath != ""
 	}
 	writeJSON(w, http.StatusOK, entries)
 }
@@ -264,11 +244,19 @@ func (s *Server) handleCreateEntry(w http.ResponseWriter, r *http.Request) {
 		audioMime = ""
 	}
 
-	_, err = s.db.Exec(`
-		INSERT INTO word_entries (id, notebook_id, created_by, word, meaning, audio_path, audio_mime, audio_duration_ms, spoken_at, created_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-	`, entryID, notebookID, uid, word, meaning, audioPath, audioMime, audioDurationMs, spokenAt, now)
-	if err != nil {
+	newEntry := models.WordEntry{
+		ID:              entryID,
+		NotebookID:      notebookID,
+		CreatedBy:       uid,
+		Word:            word,
+		Meaning:         meaning,
+		AudioPath:       audioPath,
+		AudioMime:       audioMime,
+		AudioDurationMs: audioDurationMs,
+		SpokenAt:        spokenAt,
+		CreatedAt:       now,
+	}
+	if err := s.db.Create(&newEntry).Error; err != nil {
 		writeError(w, http.StatusInternalServerError, "ことばの保存に失敗しました")
 		return
 	}
@@ -283,28 +271,15 @@ func (s *Server) handleCreateEntry(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) getEntryByID(notebookID, entryID string) (*models.WordEntry, error) {
 	var e models.WordEntry
-	var audioPath string
-	var deletedAt sql.NullTime
-	err := s.db.QueryRow(`
-		SELECT e.id, e.notebook_id, e.created_by, COALESCE(u.display_name, '家族'),
-		       e.word, e.meaning, e.audio_path, e.audio_mime, e.audio_duration_ms,
-		       e.spoken_at, e.created_at, e.deleted_at
-		FROM word_entries e
-		LEFT JOIN users u ON u.id = e.created_by
-		WHERE e.notebook_id = ? AND e.id = ?
-	`, notebookID, entryID).Scan(
-		&e.ID, &e.NotebookID, &e.CreatedBy, &e.CreatorName,
-		&e.Word, &e.Meaning, &audioPath, &e.AudioMime, &e.AudioDurationMs,
-		&e.SpokenAt, &e.CreatedAt, &deletedAt,
-	)
+	err := s.db.Table("word_entries e").
+		Select("e.*, COALESCE(u.display_name, '家族') AS creator_name").
+		Joins("LEFT JOIN users u ON u.id = e.created_by").
+		Where("e.notebook_id = ? AND e.id = ?", notebookID, entryID).
+		First(&e).Error
 	if err != nil {
 		return nil, err
 	}
-	if deletedAt.Valid {
-		t := deletedAt.Time
-		e.DeletedAt = &t
-	}
-	e.HasAudio = audioPath != ""
+	e.HasAudio = e.AudioPath != ""
 	return &e, nil
 }
 
@@ -334,13 +309,9 @@ func (s *Server) handleUpdateEntry(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var oldAudioPath string
-	var oldSpokenAt time.Time
-	err = s.db.QueryRow(
-		`SELECT audio_path, spoken_at FROM word_entries WHERE notebook_id = ? AND id = ?`,
-		notebookID, entryID,
-	).Scan(&oldAudioPath, &oldSpokenAt)
-	if err == sql.ErrNoRows {
+	var existing models.WordEntry
+	err = s.db.Where("notebook_id = ? AND id = ?", notebookID, entryID).First(&existing).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
 		writeError(w, http.StatusNotFound, "ことばが見つかりません")
 		return
 	} else if err != nil {
@@ -348,9 +319,15 @@ func (s *Server) handleUpdateEntry(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	spokenAt := oldSpokenAt
+	spokenAt := existing.SpokenAt
 	if strings.TrimSpace(req.SpokenAt) != "" {
 		spokenAt = parseSpokenAt(req.SpokenAt)
+	}
+
+	updates := map[string]any{
+		"word":      word,
+		"meaning":   meaning,
+		"spoken_at": spokenAt,
 	}
 
 	if req.AudioBase64 != "" {
@@ -372,35 +349,26 @@ func (s *Server) handleUpdateEntry(w http.ResponseWriter, r *http.Request) {
 		}
 		filename := entryID + extForMime(audioMime)
 		fullPath := filepath.Join(nbDir, filename)
-		if oldAudioPath != "" && oldAudioPath != filepath.Join(safeNbID, filename) {
-			_ = os.Remove(filepath.Join(s.cfg.AudioDir, oldAudioPath))
+		if existing.AudioPath != "" && existing.AudioPath != filepath.Join(safeNbID, filename) {
+			_ = os.Remove(filepath.Join(s.cfg.AudioDir, existing.AudioPath))
 		}
 		if err := os.WriteFile(fullPath, decoded, 0644); err != nil {
 			writeError(w, http.StatusInternalServerError, "音声ファイルの保存に失敗しました")
 			return
 		}
-		newAudioPath := filepath.Join(safeNbID, filename)
-		_, err = s.db.Exec(`
-			UPDATE word_entries
-			SET word = ?, meaning = ?, spoken_at = ?, audio_path = ?, audio_mime = ?, audio_duration_ms = ?
-			WHERE notebook_id = ? AND id = ?
-		`, word, meaning, spokenAt, newAudioPath, audioMime, req.AudioDurationMs, notebookID, entryID)
+		updates["audio_path"] = filepath.Join(safeNbID, filename)
+		updates["audio_mime"] = audioMime
+		updates["audio_duration_ms"] = req.AudioDurationMs
 	} else if req.RemoveAudio {
-		if oldAudioPath != "" {
-			_ = os.Remove(filepath.Join(s.cfg.AudioDir, oldAudioPath))
+		if existing.AudioPath != "" {
+			_ = os.Remove(filepath.Join(s.cfg.AudioDir, existing.AudioPath))
 		}
-		_, err = s.db.Exec(`
-			UPDATE word_entries
-			SET word = ?, meaning = ?, spoken_at = ?, audio_path = '', audio_mime = '', audio_duration_ms = 0
-			WHERE notebook_id = ? AND id = ?
-		`, word, meaning, spokenAt, notebookID, entryID)
-	} else {
-		_, err = s.db.Exec(`
-			UPDATE word_entries SET word = ?, meaning = ?, spoken_at = ?
-			WHERE notebook_id = ? AND id = ?
-		`, word, meaning, spokenAt, notebookID, entryID)
+		updates["audio_path"] = ""
+		updates["audio_mime"] = ""
+		updates["audio_duration_ms"] = 0
 	}
-	if err != nil {
+
+	if err := s.db.Model(&models.WordEntry{}).Where("notebook_id = ? AND id = ?", notebookID, entryID).Updates(updates).Error; err != nil {
 		writeError(w, http.StatusInternalServerError, "ことばの更新に失敗しました")
 		return
 	}
@@ -425,29 +393,30 @@ func (s *Server) handleDeleteEntry(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var audioPath string
-	err = s.db.QueryRow(`SELECT audio_path FROM word_entries WHERE notebook_id = ? AND id = ?`, notebookID, entryID).Scan(&audioPath)
-	if err == sql.ErrNoRows {
+	var existing models.WordEntry
+	err = s.db.Where("notebook_id = ? AND id = ?", notebookID, entryID).First(&existing).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
 		writeError(w, http.StatusNotFound, "ことばが見つかりません")
+		return
+	} else if err != nil {
+		writeError(w, http.StatusInternalServerError, "ことばの取得に失敗しました")
 		return
 	}
 
 	if permanent {
-		_, err = s.db.Exec(`DELETE FROM word_entries WHERE notebook_id = ? AND id = ?`, notebookID, entryID)
-		if err != nil {
+		if err := s.db.Where("notebook_id = ? AND id = ?", notebookID, entryID).Delete(&models.WordEntry{}).Error; err != nil {
 			writeError(w, http.StatusInternalServerError, "完全削除に失敗しました")
 			return
 		}
-		if audioPath != "" {
-			_ = os.Remove(filepath.Join(s.cfg.AudioDir, audioPath))
+		if existing.AudioPath != "" {
+			_ = os.Remove(filepath.Join(s.cfg.AudioDir, existing.AudioPath))
 		}
 		writeJSON(w, http.StatusOK, map[string]string{"status": "permanently_deleted"})
 		return
 	}
 
 	now := time.Now().UTC()
-	_, err = s.db.Exec(`UPDATE word_entries SET deleted_at = ? WHERE notebook_id = ? AND id = ?`, now, notebookID, entryID)
-	if err != nil {
+	if err := s.db.Model(&models.WordEntry{}).Where("notebook_id = ? AND id = ?", notebookID, entryID).Update("deleted_at", now).Error; err != nil {
 		writeError(w, http.StatusInternalServerError, "ゴミ箱への移動に失敗しました")
 		return
 	}
@@ -466,13 +435,12 @@ func (s *Server) handleRestoreEntry(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	res, err := s.db.Exec(`UPDATE word_entries SET deleted_at = NULL WHERE notebook_id = ? AND id = ?`, notebookID, entryID)
-	if err != nil {
+	res := s.db.Model(&models.WordEntry{}).Where("notebook_id = ? AND id = ?", notebookID, entryID).Update("deleted_at", nil)
+	if res.Error != nil {
 		writeError(w, http.StatusInternalServerError, "復元に失敗しました")
 		return
 	}
-	affected, _ := res.RowsAffected()
-	if affected == 0 {
+	if res.RowsAffected == 0 {
 		writeError(w, http.StatusNotFound, "ことばが見つかりません")
 		return
 	}
@@ -496,12 +464,9 @@ func (s *Server) handleGetEntryAudio(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var audioPath, audioMime string
-	err = s.db.QueryRow(
-		`SELECT audio_path, audio_mime FROM word_entries WHERE notebook_id = ? AND id = ?`,
-		notebookID, entryID,
-	).Scan(&audioPath, &audioMime)
-	if err == sql.ErrNoRows || audioPath == "" {
+	var existing models.WordEntry
+	err = s.db.Select("audio_path", "audio_mime").Where("notebook_id = ? AND id = ?", notebookID, entryID).First(&existing).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) || existing.AudioPath == "" {
 		writeError(w, http.StatusNotFound, "音声データが見つかりません")
 		return
 	} else if err != nil {
@@ -509,8 +474,8 @@ func (s *Server) handleGetEntryAudio(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	fullPath := filepath.Join(s.cfg.AudioDir, filepath.Clean(audioPath))
-	safeMime := sanitizeAudioMime(audioMime)
+	fullPath := filepath.Join(s.cfg.AudioDir, filepath.Clean(existing.AudioPath))
+	safeMime := sanitizeAudioMime(existing.AudioMime)
 	w.Header().Set("Content-Type", safeMime)
 	w.Header().Set("X-Content-Type-Options", "nosniff")
 	w.Header().Set("Content-Security-Policy", "default-src 'none'")

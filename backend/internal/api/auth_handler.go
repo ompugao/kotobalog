@@ -4,9 +4,9 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/subtle"
-	"database/sql"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -19,6 +19,7 @@ import (
 	"golang.org/x/oauth2"
 	"golang.org/x/oauth2/github"
 	"golang.org/x/oauth2/google"
+	"gorm.io/gorm"
 )
 
 const oauthStateCookieName = "kotobalog_oauth_state"
@@ -38,11 +39,7 @@ func (s *Server) setSessionCookie(w http.ResponseWriter, token string, maxAge in
 func (s *Server) handleMe(w http.ResponseWriter, r *http.Request) {
 	uid := currentUserID(r)
 	var user models.User
-	err := s.db.QueryRow(
-		`SELECT id, identity, email, display_name, avatar_url, created_at FROM users WHERE id = ?`,
-		uid,
-	).Scan(&user.ID, &user.Identity, &user.Email, &user.DisplayName, &user.AvatarURL, &user.CreatedAt)
-	if err != nil {
+	if err := s.db.Where("id = ?", uid).First(&user).Error; err != nil {
 		writeError(w, http.StatusNotFound, "ユーザーが見つかりません")
 		return
 	}
@@ -67,7 +64,7 @@ func (s *Server) handleUpdateMe(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "表示名を入力してください")
 		return
 	}
-	if _, err := s.db.Exec(`UPDATE users SET display_name = ? WHERE id = ?`, name, uid); err != nil {
+	if err := s.db.Model(&models.User{}).Where("id = ?", uid).Update("display_name", name).Error; err != nil {
 		writeError(w, http.StatusInternalServerError, "表示名の更新に失敗しました")
 		return
 	}
@@ -76,7 +73,7 @@ func (s *Server) handleUpdateMe(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
 	uid := currentUserID(r)
-	_, _ = s.db.Exec(`UPDATE users SET token_version = token_version + 1 WHERE id = ?`, uid)
+	_ = s.db.Model(&models.User{}).Where("id = ?", uid).UpdateColumn("token_version", gorm.Expr("token_version + 1")).Error
 	s.setSessionCookie(w, "", -1)
 	writeJSON(w, http.StatusOK, map[string]string{"status": "logged_out"})
 }
@@ -355,36 +352,61 @@ func (s *Server) handleOAuthCallback(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) upsertOAuthUser(provider, extID, identity, email, name, avatar string) (string, error) {
-	col := "google_id"
-	if provider == "github" {
-		col = "github_id"
-	} else if provider == "dev" {
-		var id string
-		err := s.db.QueryRow(`SELECT id FROM users WHERE identity = ?`, identity).Scan(&id)
-		if err == sql.ErrNoRows {
-			id = uuid.NewString()
-			_, err = s.db.Exec(
-				`INSERT INTO users (id, identity, email, display_name, avatar_url, created_at) VALUES (?, ?, ?, ?, ?, ?)`,
-				id, identity, email, name, avatar, time.Now().UTC(),
-			)
+	if provider == "dev" {
+		var user models.User
+		err := s.db.Where("identity = ?", identity).First(&user).Error
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			user = models.User{
+				ID:          uuid.NewString(),
+				Identity:    identity,
+				Email:       email,
+				DisplayName: name,
+				AvatarURL:   avatar,
+				CreatedAt:   time.Now().UTC(),
+			}
+			err = s.db.Create(&user).Error
 		}
-		return id, err
+		return user.ID, err
 	}
 
-	var id string
-	err := s.db.QueryRow(fmt.Sprintf(`SELECT id FROM users WHERE %s = ?`, col), extID).Scan(&id)
-	if err == sql.ErrNoRows {
-		var existingExtID string
-		err = s.db.QueryRow(fmt.Sprintf(`SELECT id, COALESCE(%s, '') FROM users WHERE identity = ?`, col), identity).Scan(&id, &existingExtID)
-		if err == sql.ErrNoRows {
-			id = uuid.NewString()
-			_, err = s.db.Exec(
-				fmt.Sprintf(`INSERT INTO users (id, identity, email, display_name, avatar_url, %s, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)`, col),
-				id, identity, email, name, avatar, extID, time.Now().UTC(),
-			)
-			return id, err
+	var user models.User
+	var err error
+	if provider == "github" {
+		err = s.db.Where("github_id = ?", extID).First(&user).Error
+	} else {
+		err = s.db.Where("google_id = ?", extID).First(&user).Error
+	}
+
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		err = s.db.Where("identity = ?", identity).First(&user).Error
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			extCopy := extID
+			user = models.User{
+				ID:          uuid.NewString(),
+				Identity:    identity,
+				Email:       email,
+				DisplayName: name,
+				AvatarURL:   avatar,
+				CreatedAt:   time.Now().UTC(),
+			}
+			if provider == "github" {
+				user.GitHubID = &extCopy
+			} else {
+				user.GoogleID = &extCopy
+			}
+			if err := s.db.Create(&user).Error; err != nil {
+				return "", err
+			}
+			return user.ID, nil
 		} else if err != nil {
 			return "", err
+		}
+
+		existingExtID := ""
+		if provider == "github" && user.GitHubID != nil {
+			existingExtID = *user.GitHubID
+		} else if provider != "github" && user.GoogleID != nil {
+			existingExtID = *user.GoogleID
 		}
 		if existingExtID != "" && existingExtID != extID {
 			return "", fmt.Errorf("identity %s is already bound to a different %s account", identity, provider)
@@ -393,6 +415,16 @@ func (s *Server) upsertOAuthUser(provider, extID, identity, email, name, avatar 
 		return "", err
 	}
 
-	_, _ = s.db.Exec(fmt.Sprintf(`UPDATE users SET identity = ?, email = ?, avatar_url = ?, %s = ? WHERE id = ?`, col), identity, email, avatar, extID, id)
-	return id, nil
+	updates := map[string]any{
+		"identity":   identity,
+		"email":      email,
+		"avatar_url": avatar,
+	}
+	if provider == "github" {
+		updates["github_id"] = extID
+	} else {
+		updates["google_id"] = extID
+	}
+	_ = s.db.Model(&models.User{}).Where("id = ?", user.ID).Updates(updates).Error
+	return user.ID, nil
 }
