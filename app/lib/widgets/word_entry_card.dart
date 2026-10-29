@@ -159,15 +159,6 @@ class _WordEntryCardState extends ConsumerState<WordEntryCard> {
                           : _formatDuration(entry.audioDurationMs),
                     ),
                   ),
-                IconButton(
-                  tooltip: '記録メモ・ことばを編集',
-                  icon: Icon(
-                    Icons.edit_outlined,
-                    size: 20,
-                    color: Colors.brown.shade600,
-                  ),
-                  onPressed: _openEditSheet,
-                ),
                 PopupMenuButton<String>(
                   icon: const Icon(Icons.more_vert, size: 20),
                   onSelected: (val) async {
