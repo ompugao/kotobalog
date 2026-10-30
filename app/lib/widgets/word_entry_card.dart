@@ -5,6 +5,7 @@ import 'package:intl/intl.dart';
 import '../models/notebook.dart';
 import '../models/word_entry.dart';
 import '../providers/app_state.dart';
+import '../services/audio_cache_service.dart';
 import 'record_entry_sheet.dart';
 
 class WordEntryCard extends ConsumerStatefulWidget {
@@ -68,7 +69,13 @@ class _WordEntryCardState extends ConsumerState<WordEntryCard> {
         .audioUrl(widget.notebook.id, widget.entry.id);
     setState(() => _isPlaying = true);
     try {
-      await _player!.play(UrlSource(url));
+      final source = await AudioCacheService().getAudioSource(
+        notebookId: widget.notebook.id,
+        entryId: widget.entry.id,
+        url: url,
+      );
+      if (!_isPlaying || !mounted) return;
+      await _player!.play(source);
     } catch (e) {
       if (mounted) {
         setState(() => _isPlaying = false);

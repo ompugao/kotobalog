@@ -8,6 +8,7 @@ import 'package:intl/intl.dart';
 import 'package:record/record.dart';
 import '../models/word_entry.dart';
 import '../providers/app_state.dart';
+import '../services/audio_cache_service.dart';
 import '../services/wav_encoder.dart';
 
 class RecordEntrySheet extends ConsumerStatefulWidget {
@@ -288,7 +289,22 @@ class _RecordEntrySheetState extends ConsumerState<RecordEntrySheet> {
           .api
           .audioUrl(nb.id, widget.existingEntry!.id);
       setState(() => _isPlayingPreview = true);
-      await _previewPlayer!.play(UrlSource(url));
+      try {
+        final source = await AudioCacheService().getAudioSource(
+          notebookId: nb.id,
+          entryId: widget.existingEntry!.id,
+          url: url,
+        );
+        if (!_isPlayingPreview || !mounted) return;
+        await _previewPlayer!.play(source);
+      } catch (e) {
+        if (mounted) {
+          setState(() => _isPlayingPreview = false);
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text('音声の再生に失敗しました: $e')),
+          );
+        }
+      }
     }
   }
 

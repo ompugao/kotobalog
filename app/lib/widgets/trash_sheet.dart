@@ -5,6 +5,7 @@ import 'package:intl/intl.dart';
 import '../models/notebook.dart';
 import '../models/word_entry.dart';
 import '../providers/app_state.dart';
+import '../services/audio_cache_service.dart';
 
 class TrashSheet extends ConsumerStatefulWidget {
   final Notebook notebook;
@@ -75,7 +76,13 @@ class _TrashSheetState extends ConsumerState<TrashSheet> {
         .audioUrl(widget.notebook.id, entry.id);
     setState(() => _playingEntryId = entry.id);
     try {
-      await _player!.play(UrlSource(url));
+      final source = await AudioCacheService().getAudioSource(
+        notebookId: widget.notebook.id,
+        entryId: entry.id,
+        url: url,
+      );
+      if (_playingEntryId != entry.id || !mounted) return;
+      await _player!.play(source);
     } catch (e) {
       if (mounted) {
         setState(() => _playingEntryId = null);

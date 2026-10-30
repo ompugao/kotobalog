@@ -7,6 +7,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import '../models/notebook.dart';
 import '../models/word_entry.dart';
 import '../services/api_client.dart';
+import '../services/audio_cache_service.dart';
 import '../services/url_cleaner.dart';
 
 class AppState {
@@ -361,6 +362,9 @@ class AppNotifier extends Notifier<AppState> {
       audioDurationMs: audioDurationMs,
       removeAudio: removeAudio,
     );
+    if (audioBytes != null || removeAudio) {
+      await AudioCacheService().evict(nb.id, entryId);
+    }
     await refreshEntries();
     return updated;
   }
@@ -369,6 +373,9 @@ class AppNotifier extends Notifier<AppState> {
     final nb = state.currentNotebook;
     if (nb == null) return;
     await api.deleteEntry(nb.id, entryId, permanent: permanent);
+    if (permanent) {
+      await AudioCacheService().evict(nb.id, entryId);
+    }
     state = state.copyWith(
       entries: state.entries.where((e) => e.id != entryId).toList(),
     );
