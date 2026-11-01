@@ -76,6 +76,7 @@ func NewServer(database *gorm.DB, cfg Config) (*Server, error) {
 		allow:  ParseAllowlist(cfg.Allowlist),
 		router: http.NewServeMux(),
 	}
+	s.migrateLegacyRawAudio()
 	s.registerRoutes()
 	return s, nil
 }

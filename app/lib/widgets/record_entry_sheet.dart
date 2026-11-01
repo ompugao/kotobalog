@@ -760,11 +760,7 @@ class _RecordEntrySheetState extends ConsumerState<RecordEntrySheet> {
                           child: CircularProgressIndicator(strokeWidth: 2),
                         )
                       : const Icon(Icons.content_cut, size: 16),
-                  label: Text(
-                    (widget.existingEntry?.hasRawAudio ?? false)
-                        ? '切り出しを再編集'
-                        : '切り出しを再編集（元音声なし）',
-                  ),
+                  label: const Text('切り出しを再編集'),
                 ),
                 const SizedBox(width: 6),
                 OutlinedButton.icon(

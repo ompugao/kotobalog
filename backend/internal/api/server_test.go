@@ -227,6 +227,43 @@ func TestAllowlistAndSharedNotebooksFlow(t *testing.T) {
 		t.Fatalf("expected raw audio to be safely preserved after re-trimming, got %q", rawRec3.Body.String())
 	}
 
+	// 6.5.3 Legacy audio migration: create a legacy entry without raw_audio, call migrateLegacyRawAudio and verify
+	legacyID := "legacy-entry-1"
+	legacyDir := filepath.Join(srv.cfg.AudioDir, nb.ID)
+	_ = os.MkdirAll(legacyDir, 0755)
+	legacyAudioBytes := []byte("RIFFlegacyaudioWAVEfmt ")
+	if err := os.WriteFile(filepath.Join(legacyDir, legacyID+".wav"), legacyAudioBytes, 0644); err != nil {
+		t.Fatalf("write legacy audio: %v", err)
+	}
+	legacyEntry := models.WordEntry{
+		ID:              legacyID,
+		NotebookID:      nb.ID,
+		CreatedBy:       papaID,
+		Word:            "まんま",
+		AudioPath:       filepath.Join(nb.ID, legacyID+".wav"),
+		AudioMime:       "audio/wav",
+		AudioDurationMs: 1500,
+	}
+	if err := srv.db.Create(&legacyEntry).Error; err != nil {
+		t.Fatalf("create legacy entry: %v", err)
+	}
+	// Run migration
+	srv.migrateLegacyRawAudio()
+
+	var migrated models.WordEntry
+	if err := srv.db.Where("id = ?", legacyID).First(&migrated).Error; err != nil {
+		t.Fatalf("find migrated entry: %v", err)
+	}
+	if migrated.RawAudioPath == "" || migrated.RawAudioDurationMs != 1500 {
+		t.Fatalf("expected migrated raw audio path and duration, got: %+v", migrated)
+	}
+	migratedRawBytes, err := os.ReadFile(filepath.Join(srv.cfg.AudioDir, migrated.RawAudioPath))
+	if err != nil || !bytes.Equal(migratedRawBytes, legacyAudioBytes) {
+		t.Fatalf("migrated raw audio file mismatch: %v", err)
+	}
+	// Clean up legacy test entry
+	_ = srv.db.Where("id = ?", legacyID).Delete(&models.WordEntry{}).Error
+
 	// 6.6 Soft delete (trash) and restore entry safeguard
 	delRec := doJSON(t, srv, http.MethodDelete, "/api/notebooks/"+nb.ID+"/entries/"+createdEntry.ID, mamaToken, nil)
 	if delRec.Code != http.StatusOK {

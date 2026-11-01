@@ -559,6 +559,40 @@ func (s *Server) handleGetEntryAudio(w http.ResponseWriter, r *http.Request) {
 	http.ServeFile(w, r, fullPath)
 }
 
+func (s *Server) migrateLegacyRawAudio() {
+	var entries []models.WordEntry
+	if err := s.db.Where("audio_path != '' AND (raw_audio_path = '' OR raw_audio_path IS NULL)").Find(&entries).Error; err != nil {
+		return
+	}
+
+	for _, entry := range entries {
+		srcPath := filepath.Join(s.cfg.AudioDir, filepath.Clean(entry.AudioPath))
+		srcBytes, err := os.ReadFile(srcPath)
+		if err != nil || len(srcBytes) == 0 {
+			continue
+		}
+
+		ext := filepath.Ext(entry.AudioPath)
+		dir := filepath.Dir(entry.AudioPath)
+		rawRelPath := filepath.Join(dir, entry.ID+"_raw"+ext)
+		rawFullPath := filepath.Join(s.cfg.AudioDir, rawRelPath)
+
+		if err := os.WriteFile(rawFullPath, srcBytes, 0644); err != nil {
+			continue
+		}
+
+		dur := entry.AudioDurationMs
+		if entry.RawAudioDurationMs > 0 {
+			dur = entry.RawAudioDurationMs
+		}
+
+		s.db.Model(&models.WordEntry{}).Where("id = ?", entry.ID).Updates(map[string]any{
+			"raw_audio_path":        rawRelPath,
+			"raw_audio_duration_ms": dur,
+		})
+	}
+}
+
 func (s *Server) handleGetEntryRawAudio(w http.ResponseWriter, r *http.Request) {
 	uid := currentUserID(r)
 	notebookID := r.PathValue("id")
