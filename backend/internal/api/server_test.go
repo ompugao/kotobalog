@@ -180,6 +180,53 @@ func TestAllowlistAndSharedNotebooksFlow(t *testing.T) {
 		t.Fatalf("unexpected updated entry: %+v", updatedEntry)
 	}
 
+	// 6.55 Update with invalid raw audio is rejected; valid raw audio replaces the stored one
+	badRaw := doJSON(t, srv, http.MethodPut, "/api/notebooks/"+nb.ID+"/entries/"+createdEntry.ID, mamaToken, map[string]any{
+		"word":             "ぶーぶー！",
+		"audio_base64":     base64.StdEncoding.EncodeToString(trimmedWav),
+		"audio_mime":       "audio/wav",
+		"raw_audio_base64": "!!!not-base64!!!",
+	})
+	if badRaw.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 on invalid raw audio, got %d", badRaw.Code)
+	}
+	newRaw := []byte("RIFFnewrawWAVEfmt ")
+	goodRaw := doJSON(t, srv, http.MethodPut, "/api/notebooks/"+nb.ID+"/entries/"+createdEntry.ID, mamaToken, map[string]any{
+		"word":                  "ぶーぶー！",
+		"audio_base64":          base64.StdEncoding.EncodeToString(trimmedWav),
+		"audio_mime":            "audio/wav",
+		"audio_duration_ms":     1200,
+		"raw_audio_base64":      base64.StdEncoding.EncodeToString(newRaw),
+		"raw_audio_duration_ms": 6000,
+	})
+	if goodRaw.Code != http.StatusOK {
+		t.Fatalf("expected 200 on update with raw audio, got %d: %s", goodRaw.Code, goodRaw.Body.String())
+	}
+	rawReq2 := httptest.NewRequest(http.MethodGet, "/api/notebooks/"+nb.ID+"/entries/"+createdEntry.ID+"/raw-audio?token="+mamaToken, nil)
+	rawRec2 := httptest.NewRecorder()
+	srv.ServeHTTP(rawRec2, rawReq2)
+	if !bytes.Equal(rawRec2.Body.Bytes(), newRaw) {
+		t.Fatalf("expected updated raw audio bytes, got %q", rawRec2.Body.String())
+	}
+
+	// 6.5.2 Re-trim again without passing raw_audio_base64; existing raw audio should remain intact!
+	retrimmedWav := []byte("RIFFretrimmedWAVEfmt ")
+	retrimRec := doJSON(t, srv, http.MethodPut, "/api/notebooks/"+nb.ID+"/entries/"+createdEntry.ID, mamaToken, map[string]any{
+		"word":              "ぶーぶー！",
+		"audio_base64":      base64.StdEncoding.EncodeToString(retrimmedWav),
+		"audio_mime":        "audio/wav",
+		"audio_duration_ms": 800,
+	})
+	if retrimRec.Code != http.StatusOK {
+		t.Fatalf("expected 200 on re-trim, got %d: %s", retrimRec.Code, retrimRec.Body.String())
+	}
+	rawReq3 := httptest.NewRequest(http.MethodGet, "/api/notebooks/"+nb.ID+"/entries/"+createdEntry.ID+"/raw-audio?token="+mamaToken, nil)
+	rawRec3 := httptest.NewRecorder()
+	srv.ServeHTTP(rawRec3, rawReq3)
+	if !bytes.Equal(rawRec3.Body.Bytes(), newRaw) {
+		t.Fatalf("expected raw audio to be safely preserved after re-trimming, got %q", rawRec3.Body.String())
+	}
+
 	// 6.6 Soft delete (trash) and restore entry safeguard
 	delRec := doJSON(t, srv, http.MethodDelete, "/api/notebooks/"+nb.ID+"/entries/"+createdEntry.ID, mamaToken, nil)
 	if delRec.Code != http.StatusOK {
