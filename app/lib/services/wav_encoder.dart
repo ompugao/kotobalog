@@ -1,6 +1,91 @@
 import 'dart:math' as math;
 import 'dart:typed_data';
 
+/// WAV (RIFF/WAVE PCM 16-bit) からヘッダを解析してPCMデータを抽出する
+class WavPcmInfo {
+  final Uint8List pcmBytes;
+  final int sampleRate;
+  final int numChannels;
+  final int durationMs;
+
+  const WavPcmInfo({
+    required this.pcmBytes,
+    required this.sampleRate,
+    required this.numChannels,
+    required this.durationMs,
+  });
+}
+
+/// WAVバイナリデータから16-bit PCMデータとフォーマット情報を取得する
+/// PCM WAV以外の形式、または破損している場合はnullを返す
+WavPcmInfo? parseWavPcm16(Uint8List wavBytes) {
+  if (wavBytes.length < 44) return null;
+  final bd = ByteData.sublistView(wavBytes);
+
+  // Check "RIFF"
+  if (bd.getUint8(0) != 0x52 ||
+      bd.getUint8(1) != 0x49 ||
+      bd.getUint8(2) != 0x46 ||
+      bd.getUint8(3) != 0x46) {
+    return null;
+  }
+  // Check "WAVE"
+  if (bd.getUint8(8) != 0x57 ||
+      bd.getUint8(9) != 0x41 ||
+      bd.getUint8(10) != 0x56 ||
+      bd.getUint8(11) != 0x45) {
+    return null;
+  }
+
+  int offset = 12;
+  int audioFormat = 1;
+  int numChannels = 1;
+  int sampleRate = 44100;
+  int bitsPerSample = 16;
+  Uint8List? pcmData;
+
+  while (offset + 8 <= wavBytes.length) {
+    final chunkId = String.fromCharCodes(wavBytes.sublist(offset, offset + 4));
+    final chunkSize = bd.getUint32(offset + 4, Endian.little);
+    offset += 8;
+
+    if (chunkId == 'fmt ') {
+      if (offset + 16 > wavBytes.length) return null;
+      audioFormat = bd.getUint16(offset, Endian.little);
+      numChannels = bd.getUint16(offset + 2, Endian.little);
+      sampleRate = bd.getUint32(offset + 4, Endian.little);
+      bitsPerSample = bd.getUint16(offset + 14, Endian.little);
+    } else if (chunkId == 'data') {
+      final actualDataEnd = math.min(offset + chunkSize, wavBytes.length);
+      pcmData = wavBytes.sublist(offset, actualDataEnd);
+      break;
+    }
+
+    offset += chunkSize;
+    // RIFF chunk padding
+    if (chunkSize % 2 != 0) {
+      offset += 1;
+    }
+  }
+
+  if (pcmData == null || audioFormat != 1 || bitsPerSample != 16) {
+    return null;
+  }
+
+  final duration = pcmDurationMs(
+    pcmData,
+    sampleRate: sampleRate,
+    numChannels: numChannels,
+  );
+
+  return WavPcmInfo(
+    pcmBytes: pcmData,
+    sampleRate: sampleRate,
+    numChannels: numChannels,
+    durationMs: duration,
+  );
+}
+
 /// 16-bitモノラルまたはステレオPCMデータにRIFF WAVヘッダを付与するユーティリティ
 Uint8List pcm16ToWav(
   Uint8List pcmBytes, {

@@ -198,8 +198,10 @@ class ApiClient {
     required String meaning,
     required DateTime spokenAt,
     Uint8List? audioBytes,
+    Uint8List? rawAudioBytes,
     String audioMime = 'audio/wav',
     int audioDurationMs = 0,
+    int rawAudioDurationMs = 0,
   }) async {
     final body = <String, dynamic>{
       'word': word,
@@ -210,6 +212,10 @@ class ApiClient {
     if (audioBytes != null && audioBytes.isNotEmpty) {
       body['audio_base64'] = base64Encode(audioBytes);
       body['audio_mime'] = audioMime;
+    }
+    if (rawAudioBytes != null && rawAudioBytes.isNotEmpty) {
+      body['raw_audio_base64'] = base64Encode(rawAudioBytes);
+      body['raw_audio_duration_ms'] = rawAudioDurationMs;
     }
     final res = await http.post(
       _uri('/api/notebooks/$notebookId/entries'),
@@ -226,8 +232,10 @@ class ApiClient {
     required String meaning,
     required DateTime spokenAt,
     Uint8List? audioBytes,
+    Uint8List? rawAudioBytes,
     String audioMime = 'audio/wav',
     int audioDurationMs = 0,
+    int rawAudioDurationMs = 0,
     bool removeAudio = false,
   }) async {
     final body = <String, dynamic>{
@@ -239,7 +247,12 @@ class ApiClient {
       body['audio_base64'] = base64Encode(audioBytes);
       body['audio_mime'] = audioMime;
       body['audio_duration_ms'] = audioDurationMs;
-    } else if (removeAudio) {
+    }
+    if (rawAudioBytes != null && rawAudioBytes.isNotEmpty) {
+      body['raw_audio_base64'] = base64Encode(rawAudioBytes);
+      body['raw_audio_duration_ms'] = rawAudioDurationMs;
+    }
+    if (removeAudio) {
       body['remove_audio'] = true;
     }
     final res = await http.put(
@@ -281,6 +294,18 @@ class ApiClient {
     }
     return _uri(
       '/api/notebooks/$notebookId/entries/$entryId/audio',
+      query.isEmpty ? null : query,
+    ).toString();
+  }
+
+  String rawAudioUrl(String notebookId, String entryId) {
+    final query = <String, String>{};
+    final isSameOriginWeb = kIsWeb && baseUrl == Uri.base.origin;
+    if (!isSameOriginWeb && token != null && token!.isNotEmpty) {
+      query['token'] = token!;
+    }
+    return _uri(
+      '/api/notebooks/$notebookId/entries/$entryId/raw-audio',
       query.isEmpty ? null : query,
     ).toString();
   }

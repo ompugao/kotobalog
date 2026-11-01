@@ -343,8 +343,10 @@ class AppNotifier extends Notifier<AppState> {
     required String meaning,
     required DateTime spokenAt,
     Uint8List? audioBytes,
+    Uint8List? rawAudioBytes,
     String audioMime = 'audio/wav',
     int audioDurationMs = 0,
+    int rawAudioDurationMs = 0,
     bool removeAudio = false,
   }) async {
     final nb = state.currentNotebook;
@@ -358,8 +360,10 @@ class AppNotifier extends Notifier<AppState> {
       meaning: meaning,
       spokenAt: spokenAt,
       audioBytes: audioBytes,
+      rawAudioBytes: rawAudioBytes,
       audioMime: audioMime,
       audioDurationMs: audioDurationMs,
+      rawAudioDurationMs: rawAudioDurationMs,
       removeAudio: removeAudio,
     );
     if (audioBytes != null || removeAudio) {

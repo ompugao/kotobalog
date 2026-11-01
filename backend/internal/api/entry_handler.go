@@ -18,13 +18,15 @@ import (
 )
 
 type entryJSONRequest struct {
-	Word            string `json:"word"`
-	Meaning         string `json:"meaning"`
-	SpokenAt        string `json:"spoken_at"`
-	AudioBase64     string `json:"audio_base64"`
-	AudioMime       string `json:"audio_mime"`
-	AudioDurationMs int    `json:"audio_duration_ms"`
-	RemoveAudio     bool   `json:"remove_audio"`
+	Word               string `json:"word"`
+	Meaning            string `json:"meaning"`
+	SpokenAt           string `json:"spoken_at"`
+	AudioBase64        string `json:"audio_base64"`
+	RawAudioBase64     string `json:"raw_audio_base64"`
+	AudioMime          string `json:"audio_mime"`
+	AudioDurationMs    int    `json:"audio_duration_ms"`
+	RawAudioDurationMs int    `json:"raw_audio_duration_ms"`
+	RemoveAudio        bool   `json:"remove_audio"`
 }
 
 func (s *Server) handleListEntries(w http.ResponseWriter, r *http.Request) {
@@ -77,6 +79,7 @@ func (s *Server) handleListEntries(w http.ResponseWriter, r *http.Request) {
 	}
 	for i := range entries {
 		entries[i].HasAudio = entries[i].AudioPath != ""
+		entries[i].HasRawAudio = entries[i].RawAudioPath != ""
 	}
 	writeJSON(w, http.StatusOK, entries)
 }
@@ -148,7 +151,9 @@ func (s *Server) handleCreateEntry(w http.ResponseWriter, r *http.Request) {
 	var word, meaning, audioMime string
 	var spokenAt time.Time
 	var audioBytes []byte
+	var rawAudioBytes []byte
 	var audioDurationMs int
+	var rawAudioDurationMs int
 
 	contentType := r.Header.Get("Content-Type")
 	if strings.HasPrefix(contentType, "multipart/form-data") {
@@ -160,6 +165,7 @@ func (s *Server) handleCreateEntry(w http.ResponseWriter, r *http.Request) {
 		meaning = strings.TrimSpace(r.FormValue("meaning"))
 		spokenAt = parseSpokenAt(r.FormValue("spoken_at"))
 		audioDurationMs, _ = strconv.Atoi(r.FormValue("audio_duration_ms"))
+		rawAudioDurationMs, _ = strconv.Atoi(r.FormValue("raw_audio_duration_ms"))
 		audioMime = r.FormValue("audio_mime")
 
 		file, header, err := r.FormFile("audio")
@@ -188,6 +194,15 @@ func (s *Server) handleCreateEntry(w http.ResponseWriter, r *http.Request) {
 				}
 			}
 		}
+
+		rawFile, _, err := r.FormFile("raw_audio")
+		if err == nil {
+			defer rawFile.Close()
+			rawData, readErr := io.ReadAll(io.LimitReader(rawFile, maxAudioBytes+1))
+			if readErr == nil && len(rawData) <= maxAudioBytes {
+				rawAudioBytes = rawData
+			}
+		}
 	} else {
 		var req entryJSONRequest
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -198,6 +213,7 @@ func (s *Server) handleCreateEntry(w http.ResponseWriter, r *http.Request) {
 		meaning = strings.TrimSpace(req.Meaning)
 		spokenAt = parseSpokenAt(req.SpokenAt)
 		audioDurationMs = req.AudioDurationMs
+		rawAudioDurationMs = req.RawAudioDurationMs
 		audioMime = req.AudioMime
 		if req.AudioBase64 != "" {
 			decoded, err := base64.StdEncoding.DecodeString(req.AudioBase64)
@@ -214,6 +230,12 @@ func (s *Server) handleCreateEntry(w http.ResponseWriter, r *http.Request) {
 				audioMime = "audio/wav"
 			}
 		}
+		if req.RawAudioBase64 != "" {
+			decoded, err := base64.StdEncoding.DecodeString(req.RawAudioBase64)
+			if err == nil && len(decoded) <= maxAudioBytes {
+				rawAudioBytes = decoded
+			}
+		}
 	}
 
 	if word == "" {
@@ -224,6 +246,7 @@ func (s *Server) handleCreateEntry(w http.ResponseWriter, r *http.Request) {
 	entryID := uuid.NewString()
 	now := time.Now().UTC()
 	audioPath := ""
+	rawAudioPath := ""
 
 	if len(audioBytes) > 0 {
 		audioMime = sanitizeAudioMime(audioMime)
@@ -240,21 +263,31 @@ func (s *Server) handleCreateEntry(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		audioPath = filepath.Join(safeNbID, filename)
+
+		if len(rawAudioBytes) > 0 {
+			rawFilename := entryID + "_raw" + extForMime(audioMime)
+			rawFullPath := filepath.Join(nbDir, rawFilename)
+			if err := os.WriteFile(rawFullPath, rawAudioBytes, 0644); err == nil {
+				rawAudioPath = filepath.Join(safeNbID, rawFilename)
+			}
+		}
 	} else {
 		audioMime = ""
 	}
 
 	newEntry := models.WordEntry{
-		ID:              entryID,
-		NotebookID:      notebookID,
-		CreatedBy:       uid,
-		Word:            word,
-		Meaning:         meaning,
-		AudioPath:       audioPath,
-		AudioMime:       audioMime,
-		AudioDurationMs: audioDurationMs,
-		SpokenAt:        spokenAt,
-		CreatedAt:       now,
+		ID:                 entryID,
+		NotebookID:         notebookID,
+		CreatedBy:          uid,
+		Word:               word,
+		Meaning:            meaning,
+		AudioPath:          audioPath,
+		RawAudioPath:       rawAudioPath,
+		AudioMime:          audioMime,
+		AudioDurationMs:    audioDurationMs,
+		RawAudioDurationMs: rawAudioDurationMs,
+		SpokenAt:           spokenAt,
+		CreatedAt:          now,
 	}
 	if err := s.db.Create(&newEntry).Error; err != nil {
 		writeError(w, http.StatusInternalServerError, "ことばの保存に失敗しました")
@@ -280,6 +313,7 @@ func (s *Server) getEntryByID(notebookID, entryID string) (*models.WordEntry, er
 		return nil, err
 	}
 	e.HasAudio = e.AudioPath != ""
+	e.HasRawAudio = e.RawAudioPath != ""
 	return &e, nil
 }
 
@@ -359,13 +393,30 @@ func (s *Server) handleUpdateEntry(w http.ResponseWriter, r *http.Request) {
 		updates["audio_path"] = filepath.Join(safeNbID, filename)
 		updates["audio_mime"] = audioMime
 		updates["audio_duration_ms"] = req.AudioDurationMs
+
+		if req.RawAudioBase64 != "" {
+			rawDecoded, err := base64.StdEncoding.DecodeString(req.RawAudioBase64)
+			if err == nil && len(rawDecoded) <= maxAudioBytes {
+				rawFilename := entryID + "_raw" + extForMime(audioMime)
+				rawFullPath := filepath.Join(nbDir, rawFilename)
+				if err := os.WriteFile(rawFullPath, rawDecoded, 0644); err == nil {
+					updates["raw_audio_path"] = filepath.Join(safeNbID, rawFilename)
+					updates["raw_audio_duration_ms"] = req.RawAudioDurationMs
+				}
+			}
+		}
 	} else if req.RemoveAudio {
 		if existing.AudioPath != "" {
 			_ = os.Remove(filepath.Join(s.cfg.AudioDir, existing.AudioPath))
 		}
+		if existing.RawAudioPath != "" {
+			_ = os.Remove(filepath.Join(s.cfg.AudioDir, existing.RawAudioPath))
+		}
 		updates["audio_path"] = ""
+		updates["raw_audio_path"] = ""
 		updates["audio_mime"] = ""
 		updates["audio_duration_ms"] = 0
+		updates["raw_audio_duration_ms"] = 0
 	}
 
 	if err := s.db.Model(&models.WordEntry{}).Where("notebook_id = ? AND id = ?", notebookID, entryID).Updates(updates).Error; err != nil {
@@ -410,6 +461,9 @@ func (s *Server) handleDeleteEntry(w http.ResponseWriter, r *http.Request) {
 		}
 		if existing.AudioPath != "" {
 			_ = os.Remove(filepath.Join(s.cfg.AudioDir, existing.AudioPath))
+		}
+		if existing.RawAudioPath != "" {
+			_ = os.Remove(filepath.Join(s.cfg.AudioDir, existing.RawAudioPath))
 		}
 		writeJSON(w, http.StatusOK, map[string]string{"status": "permanently_deleted"})
 		return
@@ -475,6 +529,45 @@ func (s *Server) handleGetEntryAudio(w http.ResponseWriter, r *http.Request) {
 	}
 
 	fullPath := filepath.Join(s.cfg.AudioDir, filepath.Clean(existing.AudioPath))
+	safeMime := sanitizeAudioMime(existing.AudioMime)
+	w.Header().Set("Content-Type", safeMime)
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	w.Header().Set("Content-Security-Policy", "default-src 'none'")
+	http.ServeFile(w, r, fullPath)
+}
+
+func (s *Server) handleGetEntryRawAudio(w http.ResponseWriter, r *http.Request) {
+	uid := currentUserID(r)
+	notebookID := r.PathValue("id")
+	entryID := r.PathValue("entryId")
+
+	ok, err := s.isNotebookMember(notebookID, uid)
+	if err != nil || !ok {
+		writeError(w, http.StatusForbidden, "このことば帳へのアクセス権限がありません")
+		return
+	}
+
+	var existing models.WordEntry
+	err = s.db.Select("raw_audio_path", "audio_path", "audio_mime").Where("notebook_id = ? AND id = ?", notebookID, entryID).First(&existing).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		writeError(w, http.StatusNotFound, "音声データが見つかりません")
+		return
+	} else if err != nil {
+		writeError(w, http.StatusInternalServerError, "音声データの取得に失敗しました")
+		return
+	}
+
+	targetPath := existing.RawAudioPath
+	// If raw_audio_path is not set but audio_path is set (e.g. before raw audio feature), fallback to audio_path
+	if targetPath == "" {
+		targetPath = existing.AudioPath
+	}
+	if targetPath == "" {
+		writeError(w, http.StatusNotFound, "音声データが見つかりません")
+		return
+	}
+
+	fullPath := filepath.Join(s.cfg.AudioDir, filepath.Clean(targetPath))
 	safeMime := sanitizeAudioMime(existing.AudioMime)
 	w.Header().Set("Content-Type", safeMime)
 	w.Header().Set("X-Content-Type-Options", "nosniff")

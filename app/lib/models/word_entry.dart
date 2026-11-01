@@ -6,8 +6,10 @@ class WordEntry {
   final String word;
   final String meaning;
   final bool hasAudio;
+  final bool hasRawAudio;
   final String audioMime;
   final int audioDurationMs;
+  final int rawAudioDurationMs;
   final DateTime spokenAt;
   final DateTime createdAt;
   final DateTime? deletedAt;
@@ -20,8 +22,10 @@ class WordEntry {
     required this.word,
     required this.meaning,
     required this.hasAudio,
+    this.hasRawAudio = false,
     required this.audioMime,
     required this.audioDurationMs,
+    this.rawAudioDurationMs = 0,
     required this.spokenAt,
     required this.createdAt,
     this.deletedAt,
@@ -37,8 +41,10 @@ class WordEntry {
       word: json['word'] as String? ?? '',
       meaning: json['meaning'] as String? ?? '',
       hasAudio: json['has_audio'] as bool? ?? false,
+      hasRawAudio: json['has_raw_audio'] as bool? ?? false,
       audioMime: json['audio_mime'] as String? ?? '',
       audioDurationMs: json['audio_duration_ms'] as int? ?? 0,
+      rawAudioDurationMs: json['raw_audio_duration_ms'] as int? ?? 0,
       spokenAt: DateTime.tryParse(json['spoken_at'] as String? ?? '')?.toLocal() ??
           DateTime.now(),
       createdAt: DateTime.tryParse(json['created_at'] as String? ?? '')?.toLocal() ??

@@ -72,6 +72,15 @@ void main() {
       final peaks = extractWaveformPeaks(pcm, barCount: 10);
       expect(peaks.length, 10);
       expect(peaks.every((p) => p >= 0.08 && p <= 1.0), isTrue);
+
+      // Verify WAV parsing round-trip
+      final wavBytes = pcm16ToWav(pcm, sampleRate: 1000, numChannels: 1);
+      final parsed = parseWavPcm16(wavBytes);
+      expect(parsed, isNotNull);
+      expect(parsed!.sampleRate, 1000);
+      expect(parsed.numChannels, 1);
+      expect(parsed.pcmBytes.length, pcm.length);
+      expect(parsed.durationMs, 1000);
     });
   });
 }

@@ -4,6 +4,7 @@ import 'dart:typed_data';
 import 'package:audioplayers/audioplayers.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:http/http.dart' as http;
 import 'package:intl/intl.dart';
 import 'package:record/record.dart';
 import '../models/word_entry.dart';
@@ -56,6 +57,8 @@ class _RecordEntrySheetState extends ConsumerState<RecordEntrySheet> {
 
   // 既存エントリ編集時の既存音声状態
   bool _keepExistingAudio = false;
+  bool _isLoadingRawAudio = false;
+  Uint8List? _rawWavForExisting; // 既存エントリ編集時の未切り出し元WAVデータ
 
   bool get _isEditing => widget.existingEntry != null;
 
@@ -339,6 +342,60 @@ class _RecordEntrySheetState extends ConsumerState<RecordEntrySheet> {
     return '${sec.toStringAsFixed(1)}秒';
   }
 
+  Uint8List? _buildRawWavBytes() {
+    final pcm = _recordedPcm;
+    if (pcm == null || pcm.isEmpty) return null;
+    return pcm16ToWav(
+      pcm,
+      sampleRate: _sampleRate,
+      numChannels: _numChannels,
+    );
+  }
+
+  Future<void> _loadRawAudioForTrimming() async {
+    final existing = widget.existingEntry;
+    final nb = ref.read(appProvider).currentNotebook;
+    if (existing == null || nb == null) return;
+
+    setState(() => _isLoadingRawAudio = true);
+    try {
+      final url = ref.read(appProvider.notifier).api.rawAudioUrl(nb.id, existing.id);
+      final res = await http.get(Uri.parse(url));
+      if (res.statusCode == 200 && res.bodyBytes.isNotEmpty) {
+        final parsed = parseWavPcm16(res.bodyBytes);
+        if (parsed != null) {
+          final peaks = extractWaveformPeaks(parsed.pcmBytes, barCount: 48);
+          if (mounted) {
+            setState(() {
+              _recordedPcm = parsed.pcmBytes;
+              _waveformPeaks = peaks;
+              _totalDurationMs = parsed.durationMs;
+              _trimStartMs = 0;
+              _trimEndMs = parsed.durationMs;
+              _keepExistingAudio = false;
+              _rawWavForExisting = res.bodyBytes;
+              _isLoadingRawAudio = false;
+            });
+            return;
+          }
+        }
+      }
+      if (mounted) {
+        setState(() => _isLoadingRawAudio = false);
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('元音声の読み込みに失敗しました')),
+        );
+      }
+    } catch (e) {
+      if (mounted) {
+        setState(() => _isLoadingRawAudio = false);
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('元音声の取得に失敗しました: $e')),
+        );
+      }
+    }
+  }
+
   Future<void> _save() async {
     final word = _wordCtrl.text.trim();
     if (word.isEmpty) {
@@ -359,6 +416,8 @@ class _RecordEntrySheetState extends ConsumerState<RecordEntrySheet> {
 
     final trimmedWav = _buildTrimmedWavBytes();
     final trimmedMs = trimmedWav != null ? _trimmedDurationMs : 0;
+    final rawWav = _buildRawWavBytes() ?? _rawWavForExisting;
+    final rawMs = rawWav != null ? _totalDurationMs : 0;
 
     setState(() => _isSaving = true);
     try {
@@ -373,8 +432,10 @@ class _RecordEntrySheetState extends ConsumerState<RecordEntrySheet> {
           meaning: _meaningCtrl.text.trim(),
           spokenAt: _spokenAt,
           audioBytes: trimmedWav,
+          rawAudioBytes: rawWav,
           audioMime: 'audio/wav',
           audioDurationMs: trimmedMs,
+          rawAudioDurationMs: rawMs,
           removeAudio: removeAudio,
         );
       } else {
@@ -384,8 +445,10 @@ class _RecordEntrySheetState extends ConsumerState<RecordEntrySheet> {
           meaning: _meaningCtrl.text.trim(),
           spokenAt: _spokenAt,
           audioBytes: trimmedWav,
+          rawAudioBytes: rawWav,
           audioMime: 'audio/wav',
           audioDurationMs: trimmedMs,
+          rawAudioDurationMs: rawMs,
         );
         await notifier.refreshEntries();
       }
@@ -681,6 +744,20 @@ class _RecordEntrySheetState extends ConsumerState<RecordEntrySheet> {
                   onPressed: _togglePreview,
                   icon: Icon(_isPlayingPreview ? Icons.stop : Icons.play_arrow),
                   label: Text(_isPlayingPreview ? '停止' : '再生'),
+                ),
+                const SizedBox(width: 6),
+                OutlinedButton.icon(
+                  onPressed: _isLoadingRawAudio
+                      ? null
+                      : () => _loadRawAudioForTrimming(),
+                  icon: _isLoadingRawAudio
+                      ? const SizedBox(
+                          width: 14,
+                          height: 14,
+                          child: CircularProgressIndicator(strokeWidth: 2),
+                        )
+                      : const Icon(Icons.content_cut, size: 16),
+                  label: const Text('切り出しを再編集'),
                 ),
                 const SizedBox(width: 6),
                 OutlinedButton.icon(

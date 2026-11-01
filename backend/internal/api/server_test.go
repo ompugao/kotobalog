@@ -108,31 +108,34 @@ func TestAllowlistAndSharedNotebooksFlow(t *testing.T) {
 	}
 
 	dummyWav := []byte("RIFFxxxxWAVEfmt ")
+	dummyRawWav := []byte("RIFFrawxxxxxWAVEfmt ")
 	rec = doJSON(t, srv, http.MethodPost, "/api/notebooks/"+nb.ID+"/entries", papaToken, map[string]any{
-		"word":              "ぶーぶー",
-		"meaning":           "パトカーや救急車を見つけたときに指差して言った",
-		"spoken_at":         "2026-10-26T10:30:00Z",
-		"audio_base64":      base64.StdEncoding.EncodeToString(dummyWav),
-		"audio_mime":        "audio/wav",
-		"audio_duration_ms": 2400,
+		"word":                  "ぶーぶー",
+		"meaning":               "パトカーや救急車を見つけたときに指差して言った",
+		"spoken_at":             "2026-10-26T10:30:00Z",
+		"audio_base64":          base64.StdEncoding.EncodeToString(dummyWav),
+		"raw_audio_base64":      base64.StdEncoding.EncodeToString(dummyRawWav),
+		"audio_mime":            "audio/wav",
+		"audio_duration_ms":     2400,
+		"raw_audio_duration_ms": 5000,
 	})
 	if rec.Code != http.StatusCreated {
 		t.Fatalf("expected 201 on create entry, got %d: %s", rec.Code, rec.Body.String())
 	}
 	var createdEntry models.WordEntry
 	_ = json.NewDecoder(rec.Body).Decode(&createdEntry)
-	if !createdEntry.HasAudio || createdEntry.CreatorName != "パパ" {
+	if !createdEntry.HasAudio || !createdEntry.HasRawAudio || createdEntry.CreatorName != "パパ" {
 		t.Fatalf("unexpected entry: %+v", createdEntry)
 	}
 
-	// 5. Mama searches entries and fetches audio
+	// 5. Mama searches entries and fetches audio and raw audio
 	rec = doJSON(t, srv, http.MethodGet, "/api/notebooks/"+nb.ID+"/entries?q=救急車", mamaToken, nil)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("expected 200 on list entries, got %d", rec.Code)
 	}
 	var entries []models.WordEntry
 	_ = json.NewDecoder(rec.Body).Decode(&entries)
-	if len(entries) != 1 || entries[0].Word != "ぶーぶー" {
+	if len(entries) != 1 || entries[0].Word != "ぶーぶー" || !entries[0].HasRawAudio {
 		t.Fatalf("unexpected search results: %+v", entries)
 	}
 
@@ -148,6 +151,14 @@ func TestAllowlistAndSharedNotebooksFlow(t *testing.T) {
 	}
 	if audioRec.Header().Get("X-Content-Type-Options") != "nosniff" {
 		t.Fatalf("expected X-Content-Type-Options: nosniff")
+	}
+
+	// 6.1 Fetch raw audio using ?token= query param
+	rawReq := httptest.NewRequest(http.MethodGet, "/api/notebooks/"+nb.ID+"/entries/"+createdEntry.ID+"/raw-audio?token="+mamaToken, nil)
+	rawRec := httptest.NewRecorder()
+	srv.ServeHTTP(rawRec, rawReq)
+	if rawRec.Code != http.StatusOK || !bytes.Equal(rawRec.Body.Bytes(), dummyRawWav) {
+		t.Fatalf("expected 200 and raw audio bytes, got %d", rawRec.Code)
 	}
 
 	// 6.5 Mama updates entry memo/word and trims audio
