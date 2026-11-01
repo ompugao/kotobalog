@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"log"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -584,6 +585,7 @@ func (s *Server) handleGetEntryAudio(w http.ResponseWriter, r *http.Request) {
 func (s *Server) migrateLegacyRawAudio() {
 	var entries []models.WordEntry
 	if err := s.db.Where("audio_path != '' AND (raw_audio_path = '' OR raw_audio_path IS NULL)").Find(&entries).Error; err != nil {
+		log.Printf("legacy raw audio migration: query failed: %v", err)
 		return
 	}
 
@@ -591,6 +593,7 @@ func (s *Server) migrateLegacyRawAudio() {
 		srcPath := filepath.Join(s.cfg.AudioDir, filepath.Clean(entry.AudioPath))
 		srcBytes, err := os.ReadFile(srcPath)
 		if err != nil || len(srcBytes) == 0 {
+			log.Printf("legacy raw audio migration: skip entry %s: cannot read %s: %v", entry.ID, srcPath, err)
 			continue
 		}
 
@@ -600,6 +603,7 @@ func (s *Server) migrateLegacyRawAudio() {
 		rawFullPath := filepath.Join(s.cfg.AudioDir, rawRelPath)
 
 		if err := os.WriteFile(rawFullPath, srcBytes, 0644); err != nil {
+			log.Printf("legacy raw audio migration: entry %s: write failed: %v", entry.ID, err)
 			continue
 		}
 
@@ -608,12 +612,15 @@ func (s *Server) migrateLegacyRawAudio() {
 			dur = entry.RawAudioDurationMs
 		}
 
-		s.db.Model(&models.WordEntry{}).Where("id = ?", entry.ID).Updates(map[string]any{
+		if err := s.db.Model(&models.WordEntry{}).Where("id = ?", entry.ID).Updates(map[string]any{
 			"raw_audio_path":        rawRelPath,
 			"raw_audio_duration_ms": dur,
 			"trim_start_ms":         0,
 			"trim_end_ms":           entry.AudioDurationMs,
-		})
+		}).Error; err != nil {
+			log.Printf("legacy raw audio migration: entry %s: db update failed: %v", entry.ID, err)
+			_ = os.Remove(rawFullPath)
+		}
 	}
 }
 

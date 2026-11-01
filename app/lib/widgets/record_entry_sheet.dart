@@ -378,8 +378,13 @@ class _RecordEntrySheetState extends ConsumerState<RecordEntrySheet> {
                   : totalMs);
 
           // 範囲外チェックと補正
-          startMs = startMs.clamp(0, math.max(0, totalMs - 100));
-          endMs = endMs.clamp(startMs + 100, totalMs);
+          if (totalMs <= 200) {
+            startMs = 0;
+            endMs = totalMs;
+          } else {
+            startMs = startMs.clamp(0, totalMs - 100);
+            endMs = endMs.clamp(startMs + 100, totalMs);
+          }
 
           if (mounted) {
             setState(() {
@@ -695,33 +700,59 @@ class _RecordEntrySheetState extends ConsumerState<RecordEntrySheet> {
                 });
               },
             ),
-            Row(
-              children: [
-                Expanded(
-                  child: FilledButton.tonalIcon(
-                    style: FilledButton.styleFrom(
-                      padding: const EdgeInsets.symmetric(vertical: 12),
-                    ),
-                    onPressed: _togglePreview,
-                    icon: Icon(
-                      _isPlayingPreview
-                          ? Icons.stop_rounded
-                          : Icons.play_arrow_rounded,
-                    ),
-                    label: Text(
-                      _isPlayingPreview ? '試聴を停止' : '切り出し範囲を試聴',
-                    ),
+            const SizedBox(height: 6),
+            SizedBox(
+              height: 48,
+              child: FilledButton.tonalIcon(
+                onPressed: _togglePreview,
+                icon: Icon(
+                  _isPlayingPreview
+                      ? Icons.stop_rounded
+                      : Icons.play_arrow_rounded,
+                  size: 22,
+                ),
+                label: Text(
+                  _isPlayingPreview ? '停止' : '試聴',
+                  style: const TextStyle(
+                    fontSize: 15,
+                    fontWeight: FontWeight.bold,
                   ),
                 ),
-                const SizedBox(width: 8),
-                OutlinedButton.icon(
-                  style: OutlinedButton.styleFrom(
-                    padding: const EdgeInsets.symmetric(
-                      horizontal: 12,
-                      vertical: 12,
-                    ),
+              ),
+            ),
+            const SizedBox(height: 8),
+            Row(
+              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+              children: [
+                TextButton.icon(
+                  style: TextButton.styleFrom(
+                    foregroundColor: Colors.brown.shade800,
                   ),
-                  onPressed: () => _startRecording(autoStart: false),
+                  onPressed: () async {
+                    final ok = await showDialog<bool>(
+                      context: context,
+                      builder: (ctx) => AlertDialog(
+                        title: const Text('音声を録り直しますか？'),
+                        content: const Text(
+                          '現在の切り出し・録音データは破棄され、新しい録音を開始します。',
+                        ),
+                        actions: [
+                          TextButton(
+                            onPressed: () => Navigator.of(ctx).pop(false),
+                            child: const Text('キャンセル'),
+                          ),
+                          FilledButton(
+                            onPressed: () => Navigator.of(ctx).pop(true),
+                            child: const Text('録り直す'),
+                          ),
+                        ],
+                      ),
+                    );
+                    if (ok == true) {
+                      await _stopPreview();
+                      await _startRecording(autoStart: false);
+                    }
+                  },
                   icon: const Icon(
                     Icons.fiber_manual_record,
                     color: Colors.red,
@@ -729,20 +760,49 @@ class _RecordEntrySheetState extends ConsumerState<RecordEntrySheet> {
                   ),
                   label: const Text('録り直す'),
                 ),
-                const SizedBox(width: 4),
-                IconButton(
-                  tooltip: '音声を添付しない',
-                  onPressed: () {
-                    _stopPreview();
-                    setState(() {
-                      _recordedPcm = null;
-                      _waveformPeaks = const [];
-                      _totalDurationMs = 0;
-                      _trimStartMs = 0;
-                      _trimEndMs = 0;
-                    });
+                TextButton.icon(
+                  style: TextButton.styleFrom(
+                    foregroundColor: Colors.red.shade700,
+                  ),
+                  onPressed: () async {
+                    final ok = await showDialog<bool>(
+                      context: context,
+                      builder: (ctx) => AlertDialog(
+                        title: const Text('音声を外しますか？'),
+                        content: const Text(
+                          '添付された音声を取り消します。（文字のみの記録になります）',
+                        ),
+                        actions: [
+                          TextButton(
+                            onPressed: () => Navigator.of(ctx).pop(false),
+                            child: const Text('キャンセル'),
+                          ),
+                          FilledButton(
+                            style: FilledButton.styleFrom(
+                              backgroundColor: Colors.red.shade600,
+                              foregroundColor: Colors.white,
+                            ),
+                            onPressed: () => Navigator.of(ctx).pop(true),
+                            child: const Text('音声を外す'),
+                          ),
+                        ],
+                      ),
+                    );
+                    if (ok == true) {
+                      await _stopPreview();
+                      if (mounted) {
+                        setState(() {
+                          _recordedPcm = null;
+                          _waveformPeaks = const [];
+                          _totalDurationMs = 0;
+                          _trimStartMs = 0;
+                          _trimEndMs = 0;
+                        });
+                      }
+                    }
                   },
-                  icon: const Icon(Icons.delete_outline),
+                  icon: const Icon(Icons.delete_outline, size: 18),
+                  label: const Text('音声を外す'),
                 ),
               ],
             ),
@@ -759,75 +819,27 @@ class _RecordEntrySheetState extends ConsumerState<RecordEntrySheet> {
           borderRadius: BorderRadius.circular(16),
           border: Border.all(color: themeColor.withValues(alpha: 0.3)),
         ),
-        child: Wrap(
-          spacing: 8,
-          runSpacing: 8,
-          alignment: WrapAlignment.spaceBetween,
-          crossAxisAlignment: WrapCrossAlignment.center,
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
             Row(
-              mainAxisSize: MainAxisSize.min,
+              mainAxisAlignment: MainAxisAlignment.spaceBetween,
               children: [
-                Icon(Icons.audiotrack, size: 18, color: Colors.brown.shade800),
-                const SizedBox(width: 6),
-                Text(
-                  '録音済みの音声 (${_formatMs(widget.existingEntry!.audioDurationMs)})',
-                  style: const TextStyle(fontWeight: FontWeight.bold),
-                ),
-              ],
-            ),
-            Row(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                OutlinedButton.icon(
-                  onPressed: _togglePreview,
-                  icon: Icon(_isPlayingPreview ? Icons.stop : Icons.play_arrow),
-                  label: Text(_isPlayingPreview ? '停止' : '再生'),
-                ),
-                const SizedBox(width: 6),
-                OutlinedButton.icon(
-                  onPressed: _isLoadingRawAudio
-                      ? null
-                      : () => _loadRawAudioForTrimming(),
-                  icon: _isLoadingRawAudio
-                      ? const SizedBox(
-                          width: 14,
-                          height: 14,
-                          child: CircularProgressIndicator(strokeWidth: 2),
-                        )
-                      : const Icon(Icons.content_cut, size: 16),
-                  label: const Text('切り出しを再編集'),
-                ),
-                const SizedBox(width: 6),
-                OutlinedButton.icon(
-                  onPressed: () async {
-                    final ok = await showDialog<bool>(
-                      context: context,
-                      builder: (ctx) => AlertDialog(
-                        title: const Text('音声を録り直しますか？'),
-                        content: const Text(
-                          '新しい録音を開始します。（保存するまでは元の録音済み音声は消えません）',
-                        ),
-                        actions: [
-                          TextButton(
-                            onPressed: () => Navigator.of(ctx).pop(false),
-                            child: const Text('キャンセル'),
-                          ),
-                          FilledButton(
-                            onPressed: () => Navigator.of(ctx).pop(true),
-                            child: const Text('録り直す'),
-                          ),
-                        ],
+                Row(
+                  children: [
+                    Icon(Icons.audiotrack, size: 18, color: Colors.brown.shade800),
+                    const SizedBox(width: 6),
+                    Text(
+                      '録音済みの音声 (${_formatMs(widget.existingEntry!.audioDurationMs)})',
+                      style: TextStyle(
+                        fontWeight: FontWeight.bold,
+                        color: Colors.brown.shade900,
                       ),
-                    );
-                    if (ok == true) {
-                      await _startRecording(autoStart: false);
-                    }
-                  },
-                  icon: const Icon(Icons.mic, color: Colors.red, size: 16),
-                  label: const Text('録り直す'),
+                    ),
+                  ],
                 ),
                 IconButton(
+                  visualDensity: VisualDensity.compact,
                   tooltip: '音声を削除',
                   onPressed: () async {
                     bool confirmedCheck = false;
@@ -895,7 +907,102 @@ class _RecordEntrySheetState extends ConsumerState<RecordEntrySheet> {
                       }
                     }
                   },
-                  icon: const Icon(Icons.delete_outline),
+                  icon: const Icon(Icons.delete_outline, size: 20),
+                ),
+              ],
+            ),
+            const SizedBox(height: 8),
+            Row(
+              children: [
+                Expanded(
+                  child: OutlinedButton.icon(
+                    style: OutlinedButton.styleFrom(
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 4,
+                        vertical: 8,
+                      ),
+                      visualDensity: VisualDensity.compact,
+                    ),
+                    onPressed: _togglePreview,
+                    icon: Icon(
+                      _isPlayingPreview
+                          ? Icons.stop_rounded
+                          : Icons.play_arrow_rounded,
+                      size: 18,
+                    ),
+                    label: Text(
+                      _isPlayingPreview ? '停止' : '再生',
+                      style: const TextStyle(fontSize: 13),
+                    ),
+                  ),
+                ),
+                const SizedBox(width: 6),
+                Expanded(
+                  child: OutlinedButton.icon(
+                    style: OutlinedButton.styleFrom(
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 4,
+                        vertical: 8,
+                      ),
+                      visualDensity: VisualDensity.compact,
+                    ),
+                    onPressed: _isLoadingRawAudio
+                        ? null
+                        : () => _loadRawAudioForTrimming(),
+                    icon: _isLoadingRawAudio
+                        ? const SizedBox(
+                            width: 14,
+                            height: 14,
+                            child: CircularProgressIndicator(strokeWidth: 2),
+                          )
+                        : const Icon(Icons.content_cut, size: 16),
+                    label: const Text(
+                      '再編集',
+                      style: TextStyle(fontSize: 13),
+                    ),
+                  ),
+                ),
+                const SizedBox(width: 6),
+                Expanded(
+                  child: OutlinedButton.icon(
+                    style: OutlinedButton.styleFrom(
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 4,
+                        vertical: 8,
+                      ),
+                      visualDensity: VisualDensity.compact,
+                    ),
+                    onPressed: () async {
+                      final ok = await showDialog<bool>(
+                        context: context,
+                        builder: (ctx) => AlertDialog(
+                          title: const Text('音声を録り直しますか？'),
+                          content: const Text(
+                            '新しい録音を開始します。（保存するまでは元の録音済み音声は消えません）',
+                          ),
+                          actions: [
+                            TextButton(
+                              onPressed: () => Navigator.of(ctx).pop(false),
+                              child: const Text('キャンセル'),
+                            ),
+                            FilledButton(
+                              onPressed: () => Navigator.of(ctx).pop(true),
+                              child: const Text('録り直す'),
+                            ),
+                          ],
+                        ),
+                      );
+                      if (ok == true) {
+                        await _stopPreview();
+                        await _startRecording(autoStart: false);
+                      }
+                    },
+                    icon: const Icon(Icons.mic, color: Colors.red, size: 16),
+                    label: const Text(
+                      '録り直す',
+                      style: TextStyle(fontSize: 13),
+                    ),
+                  ),
                 ),
               ],
             ),
