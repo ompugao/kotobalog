@@ -347,6 +347,8 @@ class AppNotifier extends Notifier<AppState> {
     String audioMime = 'audio/wav',
     int audioDurationMs = 0,
     int rawAudioDurationMs = 0,
+    int trimStartMs = 0,
+    int trimEndMs = 0,
     bool removeAudio = false,
   }) async {
     final nb = state.currentNotebook;
@@ -364,6 +366,8 @@ class AppNotifier extends Notifier<AppState> {
       audioMime: audioMime,
       audioDurationMs: audioDurationMs,
       rawAudioDurationMs: rawAudioDurationMs,
+      trimStartMs: trimStartMs,
+      trimEndMs: trimEndMs,
       removeAudio: removeAudio,
     );
     if (audioBytes != null || removeAudio) {

@@ -49,6 +49,8 @@ type WordEntry struct {
 	AudioMime          string     `gorm:"type:text;not null;default:''" json:"audio_mime,omitempty"`
 	AudioDurationMs    int        `gorm:"not null;default:0" json:"audio_duration_ms"`
 	RawAudioDurationMs int        `gorm:"not null;default:0" json:"raw_audio_duration_ms"`
+	TrimStartMs        int        `gorm:"not null;default:0" json:"trim_start_ms"`
+	TrimEndMs          int        `gorm:"not null;default:0" json:"trim_end_ms"`
 	SpokenAt           time.Time  `gorm:"not null;index:idx_word_entries_notebook_spoken,priority:2,sort:desc" json:"spoken_at"`
 	CreatedAt          time.Time  `gorm:"not null;autoCreateTime:false" json:"created_at"`
 	DeletedAt          *time.Time `gorm:"index" json:"deleted_at,omitempty"`

@@ -10,6 +10,8 @@ class WordEntry {
   final String audioMime;
   final int audioDurationMs;
   final int rawAudioDurationMs;
+  final int trimStartMs;
+  final int trimEndMs;
   final DateTime spokenAt;
   final DateTime createdAt;
   final DateTime? deletedAt;
@@ -26,6 +28,8 @@ class WordEntry {
     required this.audioMime,
     required this.audioDurationMs,
     this.rawAudioDurationMs = 0,
+    this.trimStartMs = 0,
+    this.trimEndMs = 0,
     required this.spokenAt,
     required this.createdAt,
     this.deletedAt,
@@ -45,6 +49,8 @@ class WordEntry {
       audioMime: json['audio_mime'] as String? ?? '',
       audioDurationMs: json['audio_duration_ms'] as int? ?? 0,
       rawAudioDurationMs: json['raw_audio_duration_ms'] as int? ?? 0,
+      trimStartMs: json['trim_start_ms'] as int? ?? 0,
+      trimEndMs: json['trim_end_ms'] as int? ?? 0,
       spokenAt: DateTime.tryParse(json['spoken_at'] as String? ?? '')?.toLocal() ??
           DateTime.now(),
       createdAt: DateTime.tryParse(json['created_at'] as String? ?? '')?.toLocal() ??

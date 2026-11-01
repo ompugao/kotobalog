@@ -26,6 +26,8 @@ type entryJSONRequest struct {
 	AudioMime          string `json:"audio_mime"`
 	AudioDurationMs    int    `json:"audio_duration_ms"`
 	RawAudioDurationMs int    `json:"raw_audio_duration_ms"`
+	TrimStartMs        int    `json:"trim_start_ms"`
+	TrimEndMs          int    `json:"trim_end_ms"`
 	RemoveAudio        bool   `json:"remove_audio"`
 }
 
@@ -154,6 +156,8 @@ func (s *Server) handleCreateEntry(w http.ResponseWriter, r *http.Request) {
 	var rawAudioBytes []byte
 	var audioDurationMs int
 	var rawAudioDurationMs int
+	var trimStartMs int
+	var trimEndMs int
 
 	contentType := r.Header.Get("Content-Type")
 	if strings.HasPrefix(contentType, "multipart/form-data") {
@@ -166,6 +170,8 @@ func (s *Server) handleCreateEntry(w http.ResponseWriter, r *http.Request) {
 		spokenAt = parseSpokenAt(r.FormValue("spoken_at"))
 		audioDurationMs, _ = strconv.Atoi(r.FormValue("audio_duration_ms"))
 		rawAudioDurationMs, _ = strconv.Atoi(r.FormValue("raw_audio_duration_ms"))
+		trimStartMs, _ = strconv.Atoi(r.FormValue("trim_start_ms"))
+		trimEndMs, _ = strconv.Atoi(r.FormValue("trim_end_ms"))
 		audioMime = r.FormValue("audio_mime")
 
 		file, header, err := r.FormFile("audio")
@@ -220,6 +226,8 @@ func (s *Server) handleCreateEntry(w http.ResponseWriter, r *http.Request) {
 		spokenAt = parseSpokenAt(req.SpokenAt)
 		audioDurationMs = req.AudioDurationMs
 		rawAudioDurationMs = req.RawAudioDurationMs
+		trimStartMs = req.TrimStartMs
+		trimEndMs = req.TrimEndMs
 		audioMime = req.AudioMime
 		if req.AudioBase64 != "" {
 			decoded, err := base64.StdEncoding.DecodeString(req.AudioBase64)
@@ -290,6 +298,10 @@ func (s *Server) handleCreateEntry(w http.ResponseWriter, r *http.Request) {
 		audioMime = ""
 	}
 
+	if trimEndMs == 0 && audioDurationMs > 0 {
+		trimEndMs = trimStartMs + audioDurationMs
+	}
+
 	newEntry := models.WordEntry{
 		ID:                 entryID,
 		NotebookID:         notebookID,
@@ -301,6 +313,8 @@ func (s *Server) handleCreateEntry(w http.ResponseWriter, r *http.Request) {
 		AudioMime:          audioMime,
 		AudioDurationMs:    audioDurationMs,
 		RawAudioDurationMs: rawAudioDurationMs,
+		TrimStartMs:        trimStartMs,
+		TrimEndMs:          trimEndMs,
 		SpokenAt:           spokenAt,
 		CreatedAt:          now,
 	}
@@ -408,6 +422,12 @@ func (s *Server) handleUpdateEntry(w http.ResponseWriter, r *http.Request) {
 		updates["audio_path"] = filepath.Join(safeNbID, filename)
 		updates["audio_mime"] = audioMime
 		updates["audio_duration_ms"] = req.AudioDurationMs
+		updates["trim_start_ms"] = req.TrimStartMs
+		if req.TrimEndMs > 0 {
+			updates["trim_end_ms"] = req.TrimEndMs
+		} else if req.AudioDurationMs > 0 {
+			updates["trim_end_ms"] = req.TrimStartMs + req.AudioDurationMs
+		}
 
 		if req.RawAudioBase64 != "" {
 			rawDecoded, err := base64.StdEncoding.DecodeString(req.RawAudioBase64)
@@ -440,6 +460,8 @@ func (s *Server) handleUpdateEntry(w http.ResponseWriter, r *http.Request) {
 		updates["audio_mime"] = ""
 		updates["audio_duration_ms"] = 0
 		updates["raw_audio_duration_ms"] = 0
+		updates["trim_start_ms"] = 0
+		updates["trim_end_ms"] = 0
 	}
 
 	if err := s.db.Model(&models.WordEntry{}).Where("notebook_id = ? AND id = ?", notebookID, entryID).Updates(updates).Error; err != nil {
@@ -589,6 +611,8 @@ func (s *Server) migrateLegacyRawAudio() {
 		s.db.Model(&models.WordEntry{}).Where("id = ?", entry.ID).Updates(map[string]any{
 			"raw_audio_path":        rawRelPath,
 			"raw_audio_duration_ms": dur,
+			"trim_start_ms":         0,
+			"trim_end_ms":           entry.AudioDurationMs,
 		})
 	}
 }

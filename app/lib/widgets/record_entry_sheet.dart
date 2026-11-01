@@ -367,13 +367,27 @@ class _RecordEntrySheetState extends ConsumerState<RecordEntrySheet> {
         final parsed = parseWavPcm16(res.bodyBytes);
         if (parsed != null) {
           final peaks = extractWaveformPeaks(parsed.pcmBytes, barCount: 48);
+          final totalMs = parsed.durationMs;
+
+          // 既存の切り出し位置を復元する
+          int startMs = existing.trimStartMs;
+          int endMs = existing.trimEndMs > 0
+              ? existing.trimEndMs
+              : (existing.audioDurationMs > 0
+                  ? existing.audioDurationMs
+                  : totalMs);
+
+          // 範囲外チェックと補正
+          startMs = startMs.clamp(0, math.max(0, totalMs - 100));
+          endMs = endMs.clamp(startMs + 100, totalMs);
+
           if (mounted) {
             setState(() {
               _recordedPcm = parsed.pcmBytes;
               _waveformPeaks = peaks;
-              _totalDurationMs = parsed.durationMs;
-              _trimStartMs = 0;
-              _trimEndMs = parsed.durationMs;
+              _totalDurationMs = totalMs;
+              _trimStartMs = startMs;
+              _trimEndMs = endMs;
               _keepExistingAudio = false;
               _rawLoadedFromServer = true;
               _isLoadingRawAudio = false;
@@ -439,6 +453,8 @@ class _RecordEntrySheetState extends ConsumerState<RecordEntrySheet> {
           audioMime: 'audio/wav',
           audioDurationMs: trimmedMs,
           rawAudioDurationMs: rawMs,
+          trimStartMs: trimmedWav != null ? _trimStartMs : 0,
+          trimEndMs: trimmedWav != null ? _trimEndMs : 0,
           removeAudio: removeAudio,
         );
       } else {
@@ -452,6 +468,8 @@ class _RecordEntrySheetState extends ConsumerState<RecordEntrySheet> {
           audioMime: 'audio/wav',
           audioDurationMs: trimmedMs,
           rawAudioDurationMs: rawMs,
+          trimStartMs: trimmedWav != null ? _trimStartMs : 0,
+          trimEndMs: trimmedWav != null ? _trimEndMs : 0,
         );
         await notifier.refreshEntries();
       }

@@ -202,12 +202,16 @@ class ApiClient {
     String audioMime = 'audio/wav',
     int audioDurationMs = 0,
     int rawAudioDurationMs = 0,
+    int trimStartMs = 0,
+    int trimEndMs = 0,
   }) async {
     final body = <String, dynamic>{
       'word': word,
       'meaning': meaning,
       'spoken_at': spokenAt.toUtc().toIso8601String(),
       'audio_duration_ms': audioDurationMs,
+      'trim_start_ms': trimStartMs,
+      'trim_end_ms': trimEndMs,
     };
     if (audioBytes != null && audioBytes.isNotEmpty) {
       body['audio_base64'] = base64Encode(audioBytes);
@@ -236,12 +240,16 @@ class ApiClient {
     String audioMime = 'audio/wav',
     int audioDurationMs = 0,
     int rawAudioDurationMs = 0,
+    int trimStartMs = 0,
+    int trimEndMs = 0,
     bool removeAudio = false,
   }) async {
     final body = <String, dynamic>{
       'word': word,
       'meaning': meaning,
       'spoken_at': spokenAt.toUtc().toIso8601String(),
+      'trim_start_ms': trimStartMs,
+      'trim_end_ms': trimEndMs,
     };
     if (audioBytes != null && audioBytes.isNotEmpty) {
       body['audio_base64'] = base64Encode(audioBytes);
