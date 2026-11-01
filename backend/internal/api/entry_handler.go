@@ -132,7 +132,7 @@ func extForMime(mime string) string {
 
 const (
 	maxAudioBytes     = 20 << 20 // 20 MB
-	maxEntryBodyBytes = 28 << 20 // 28 MB (allows base64 overhead for 20 MB audio)
+	maxEntryBodyBytes = 56 << 20 // 56 MB (allows base64 overhead for two 20 MB audio files)
 	maxMetaBodyBytes  = 64 << 10 // 64 KB
 )
 
@@ -199,9 +199,15 @@ func (s *Server) handleCreateEntry(w http.ResponseWriter, r *http.Request) {
 		if err == nil {
 			defer rawFile.Close()
 			rawData, readErr := io.ReadAll(io.LimitReader(rawFile, maxAudioBytes+1))
-			if readErr == nil && len(rawData) <= maxAudioBytes {
-				rawAudioBytes = rawData
+			if readErr != nil {
+				writeError(w, http.StatusBadRequest, "元音声データの読み込みに失敗しました")
+				return
 			}
+			if len(rawData) > maxAudioBytes {
+				writeError(w, http.StatusRequestEntityTooLarge, "元音声ファイルのサイズが大きすぎます（上限20MB）")
+				return
+			}
+			rawAudioBytes = rawData
 		}
 	} else {
 		var req entryJSONRequest
@@ -232,9 +238,15 @@ func (s *Server) handleCreateEntry(w http.ResponseWriter, r *http.Request) {
 		}
 		if req.RawAudioBase64 != "" {
 			decoded, err := base64.StdEncoding.DecodeString(req.RawAudioBase64)
-			if err == nil && len(decoded) <= maxAudioBytes {
-				rawAudioBytes = decoded
+			if err != nil {
+				writeError(w, http.StatusBadRequest, "元音声データのデコードに失敗しました")
+				return
 			}
+			if len(decoded) > maxAudioBytes {
+				writeError(w, http.StatusRequestEntityTooLarge, "元音声ファイルのサイズが大きすぎます（上限20MB）")
+				return
+			}
+			rawAudioBytes = decoded
 		}
 	}
 
@@ -267,9 +279,12 @@ func (s *Server) handleCreateEntry(w http.ResponseWriter, r *http.Request) {
 		if len(rawAudioBytes) > 0 {
 			rawFilename := entryID + "_raw" + extForMime(audioMime)
 			rawFullPath := filepath.Join(nbDir, rawFilename)
-			if err := os.WriteFile(rawFullPath, rawAudioBytes, 0644); err == nil {
-				rawAudioPath = filepath.Join(safeNbID, rawFilename)
+			if err := os.WriteFile(rawFullPath, rawAudioBytes, 0644); err != nil {
+				_ = os.Remove(filepath.Join(s.cfg.AudioDir, audioPath))
+				writeError(w, http.StatusInternalServerError, "元音声ファイルの保存に失敗しました")
+				return
 			}
+			rawAudioPath = filepath.Join(safeNbID, rawFilename)
 		}
 	} else {
 		audioMime = ""
@@ -396,14 +411,22 @@ func (s *Server) handleUpdateEntry(w http.ResponseWriter, r *http.Request) {
 
 		if req.RawAudioBase64 != "" {
 			rawDecoded, err := base64.StdEncoding.DecodeString(req.RawAudioBase64)
-			if err == nil && len(rawDecoded) <= maxAudioBytes {
-				rawFilename := entryID + "_raw" + extForMime(audioMime)
-				rawFullPath := filepath.Join(nbDir, rawFilename)
-				if err := os.WriteFile(rawFullPath, rawDecoded, 0644); err == nil {
-					updates["raw_audio_path"] = filepath.Join(safeNbID, rawFilename)
-					updates["raw_audio_duration_ms"] = req.RawAudioDurationMs
-				}
+			if err != nil {
+				writeError(w, http.StatusBadRequest, "元音声データのデコードに失敗しました")
+				return
 			}
+			if len(rawDecoded) > maxAudioBytes {
+				writeError(w, http.StatusRequestEntityTooLarge, "元音声ファイルのサイズが大きすぎます（上限20MB）")
+				return
+			}
+			rawFilename := entryID + "_raw" + extForMime(audioMime)
+			rawFullPath := filepath.Join(nbDir, rawFilename)
+			if err := os.WriteFile(rawFullPath, rawDecoded, 0644); err != nil {
+				writeError(w, http.StatusInternalServerError, "元音声ファイルの保存に失敗しました")
+				return
+			}
+			updates["raw_audio_path"] = filepath.Join(safeNbID, rawFilename)
+			updates["raw_audio_duration_ms"] = req.RawAudioDurationMs
 		}
 	} else if req.RemoveAudio {
 		if existing.AudioPath != "" {

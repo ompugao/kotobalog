@@ -36,10 +36,10 @@ type Notebook struct {
 }
 
 type WordEntry struct {
-	ID              string     `gorm:"primaryKey;type:text" json:"id"`
-	NotebookID      string     `gorm:"type:text;not null;index:idx_word_entries_notebook_spoken,priority:1" json:"notebook_id"`
-	CreatedBy       string     `gorm:"type:text;not null" json:"created_by"`
-	CreatorName     string     `gorm:"->;-:migration" json:"creator_name"`
+	ID                 string     `gorm:"primaryKey;type:text" json:"id"`
+	NotebookID         string     `gorm:"type:text;not null;index:idx_word_entries_notebook_spoken,priority:1" json:"notebook_id"`
+	CreatedBy          string     `gorm:"type:text;not null" json:"created_by"`
+	CreatorName        string     `gorm:"->;-:migration" json:"creator_name"`
 	Word               string     `gorm:"type:text;not null" json:"word"`
 	Meaning            string     `gorm:"type:text;not null;default:''" json:"meaning"`
 	AudioPath          string     `gorm:"type:text;not null;default:''" json:"-"`
@@ -50,8 +50,8 @@ type WordEntry struct {
 	AudioDurationMs    int        `gorm:"not null;default:0" json:"audio_duration_ms"`
 	RawAudioDurationMs int        `gorm:"not null;default:0" json:"raw_audio_duration_ms"`
 	SpokenAt           time.Time  `gorm:"not null;index:idx_word_entries_notebook_spoken,priority:2,sort:desc" json:"spoken_at"`
-	CreatedAt       time.Time  `gorm:"not null;autoCreateTime:false" json:"created_at"`
-	DeletedAt       *time.Time `gorm:"index" json:"deleted_at,omitempty"`
+	CreatedAt          time.Time  `gorm:"not null;autoCreateTime:false" json:"created_at"`
+	DeletedAt          *time.Time `gorm:"index" json:"deleted_at,omitempty"`
 
 	Notebook *Notebook `gorm:"foreignKey:NotebookID;references:ID;constraint:OnDelete:CASCADE" json:"-"`
 	Creator  *User     `gorm:"foreignKey:CreatedBy;references:ID;constraint:OnDelete:CASCADE" json:"-"`

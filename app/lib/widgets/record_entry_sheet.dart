@@ -58,7 +58,8 @@ class _RecordEntrySheetState extends ConsumerState<RecordEntrySheet> {
   // 既存エントリ編集時の既存音声状態
   bool _keepExistingAudio = false;
   bool _isLoadingRawAudio = false;
-  Uint8List? _rawWavForExisting; // 既存エントリ編集時の未切り出し元WAVデータ
+  // サーバーから読み込んだ元音声を編集中か（trueの間は元音声を再アップロードしない）
+  bool _rawLoadedFromServer = false;
 
   bool get _isEditing => widget.existingEntry != null;
 
@@ -219,6 +220,7 @@ class _RecordEntrySheetState extends ConsumerState<RecordEntrySheet> {
         _isRecording = false;
         _isStartingRecorder = false;
         _recordedPcm = rawPcm;
+        _rawLoadedFromServer = false;
         _waveformPeaks = peaks;
         _totalDurationMs = durationMs;
         _trimStartMs = 0;
@@ -373,7 +375,7 @@ class _RecordEntrySheetState extends ConsumerState<RecordEntrySheet> {
               _trimStartMs = 0;
               _trimEndMs = parsed.durationMs;
               _keepExistingAudio = false;
-              _rawWavForExisting = res.bodyBytes;
+              _rawLoadedFromServer = true;
               _isLoadingRawAudio = false;
             });
             return;
@@ -416,7 +418,8 @@ class _RecordEntrySheetState extends ConsumerState<RecordEntrySheet> {
 
     final trimmedWav = _buildTrimmedWavBytes();
     final trimmedMs = trimmedWav != null ? _trimmedDurationMs : 0;
-    final rawWav = _buildRawWavBytes() ?? _rawWavForExisting;
+    // サーバー保存済みの元音声は再送しない（新規録音時のみ送る）
+    final rawWav = _rawLoadedFromServer ? null : _buildRawWavBytes();
     final rawMs = rawWav != null ? _totalDurationMs : 0;
 
     setState(() => _isSaving = true);
@@ -757,7 +760,11 @@ class _RecordEntrySheetState extends ConsumerState<RecordEntrySheet> {
                           child: CircularProgressIndicator(strokeWidth: 2),
                         )
                       : const Icon(Icons.content_cut, size: 16),
-                  label: const Text('切り出しを再編集'),
+                  label: Text(
+                    (widget.existingEntry?.hasRawAudio ?? false)
+                        ? '切り出しを再編集'
+                        : '切り出しを再編集（元音声なし）',
+                  ),
                 ),
                 const SizedBox(width: 6),
                 OutlinedButton.icon(
