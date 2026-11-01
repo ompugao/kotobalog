@@ -695,23 +695,41 @@ class _RecordEntrySheetState extends ConsumerState<RecordEntrySheet> {
                 });
               },
             ),
-            Wrap(
-              spacing: 8,
-              runSpacing: 8,
-              alignment: WrapAlignment.center,
+            Row(
               children: [
-                FilledButton.tonalIcon(
-                  onPressed: _togglePreview,
-                  icon: Icon(
-                    _isPlayingPreview ? Icons.stop_rounded : Icons.play_arrow_rounded,
+                Expanded(
+                  child: FilledButton.tonalIcon(
+                    style: FilledButton.styleFrom(
+                      padding: const EdgeInsets.symmetric(vertical: 12),
+                    ),
+                    onPressed: _togglePreview,
+                    icon: Icon(
+                      _isPlayingPreview
+                          ? Icons.stop_rounded
+                          : Icons.play_arrow_rounded,
+                    ),
+                    label: Text(
+                      _isPlayingPreview ? '試聴を停止' : '切り出し範囲を試聴',
+                    ),
                   ),
-                  label: Text(_isPlayingPreview ? '停止' : '切り出し範囲を試聴'),
                 ),
+                const SizedBox(width: 8),
                 OutlinedButton.icon(
+                  style: OutlinedButton.styleFrom(
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 12,
+                      vertical: 12,
+                    ),
+                  ),
                   onPressed: () => _startRecording(autoStart: false),
-                  icon: const Icon(Icons.fiber_manual_record, color: Colors.red, size: 16),
+                  icon: const Icon(
+                    Icons.fiber_manual_record,
+                    color: Colors.red,
+                    size: 16,
+                  ),
                   label: const Text('録り直す'),
                 ),
+                const SizedBox(width: 4),
                 IconButton(
                   tooltip: '音声を添付しない',
                   onPressed: () {
