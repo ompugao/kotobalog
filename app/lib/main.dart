@@ -38,6 +38,8 @@ class KotobaLogApp extends ConsumerWidget {
       ],
       locale: const Locale('ja', 'JP'),
       theme: ThemeData(
+        fontFamily: 'NotoSansJP',
+        fontFamilyFallback: const ['Noto Color Emoji', 'sans-serif'],
         colorScheme: ColorScheme.fromSeed(
           seedColor: seedColor,
           brightness: Brightness.light,
