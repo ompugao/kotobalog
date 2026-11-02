@@ -4,6 +4,8 @@
     <application
         android:label="ことばログ"
         android:name="${applicationName}"
+        android:allowBackup="false"
+        android:fullBackupContent="false"
         android:usesCleartextTraffic="false"
         android:icon="@mipmap/ic_launcher">
         <activity
