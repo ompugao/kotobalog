@@ -6,10 +6,12 @@ external void _replaceState(JSAny? data, String unused, String url);
 void clearAuthQueryParams() {
   final uri = Uri.base;
   if (uri.queryParameters.containsKey('token') ||
+      uri.queryParameters.containsKey('code') ||
       uri.queryParameters.containsKey('error') ||
       uri.queryParameters.containsKey('identity')) {
     final cleanParams = Map<String, String>.from(uri.queryParameters)
       ..remove('token')
+      ..remove('code')
       ..remove('error')
       ..remove('identity');
     final newUri = Uri(

@@ -80,6 +80,7 @@ class _TrashSheetState extends ConsumerState<TrashSheet> {
         notebookId: widget.notebook.id,
         entryId: entry.id,
         url: url,
+        token: ref.read(appProvider).token,
       );
       if (_playingEntryId != entry.id || !mounted) return;
       await _player!.play(source);

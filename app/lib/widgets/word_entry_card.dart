@@ -73,6 +73,7 @@ class _WordEntryCardState extends ConsumerState<WordEntryCard> {
         notebookId: widget.notebook.id,
         entryId: widget.entry.id,
         url: url,
+        token: ref.read(appProvider).token,
       );
       if (!_isPlaying || !mounted) return;
       await _player!.play(source);

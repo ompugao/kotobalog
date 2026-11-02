@@ -1,14 +1,30 @@
 import 'dart:async';
+import 'dart:convert';
+import 'dart:math';
 import 'dart:typed_data';
 import 'package:app_links/app_links.dart';
+import 'package:crypto/crypto.dart';
 import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:url_launcher/url_launcher.dart';
 import '../models/notebook.dart';
 import '../models/word_entry.dart';
 import '../services/api_client.dart';
 import '../services/audio_cache_service.dart';
 import '../services/url_cleaner.dart';
+
+String generateCodeVerifier() {
+  final random = Random.secure();
+  final values = List<int>.generate(32, (i) => random.nextInt(256));
+  return base64UrlEncode(values).replaceAll('=', '');
+}
+
+String computeCodeChallenge(String verifier) {
+  final bytes = utf8.encode(verifier);
+  final digest = sha256.convert(bytes);
+  return base64UrlEncode(digest.bytes).replaceAll('=', '');
+}
 
 class AppState {
   final bool isInitializing;
@@ -83,6 +99,7 @@ class AppNotifier extends Notifier<AppState> {
   static const _prefServerUrl = 'kotobalog_server_url';
   static const _prefToken = 'kotobalog_token';
   static const _prefNotebookId = 'kotobalog_notebook_id';
+  static const _prefCodeVerifier = 'kotobalog_code_verifier';
   StreamSubscription<Uri>? _linkSub;
 
   @override
@@ -99,6 +116,25 @@ class AppNotifier extends Notifier<AppState> {
         token: state.token,
       );
 
+  Future<void> startOAuthFlow(String provider, {required String redirectUri}) async {
+    final verifier = generateCodeVerifier();
+    final challenge = computeCodeChallenge(verifier);
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString(_prefCodeVerifier, verifier);
+
+    final url = api.oauthUrl(
+      provider,
+      redirectUri: redirectUri,
+      codeChallenge: challenge,
+      codeChallengeMethod: 'S256',
+    );
+    await launchUrl(
+      Uri.parse(url),
+      webOnlyWindowName: kIsWeb ? '_self' : null,
+      mode: LaunchMode.externalApplication,
+    );
+  }
+
   Future<void> _handleCallbackUri(Uri uri) async {
     final errCode = uri.queryParameters['error'];
     final errIdentity = uri.queryParameters['identity'] ?? '';
@@ -112,6 +148,23 @@ class AppNotifier extends Notifier<AppState> {
       state = state.copyWith(
         authError: 'OAuthログインに失敗しました ($errCode)',
       );
+      return;
+    }
+
+    final code = uri.queryParameters['code'];
+    if (code != null && code.isNotEmpty) {
+      final prefs = await SharedPreferences.getInstance();
+      final verifier = prefs.getString(_prefCodeVerifier);
+      try {
+        final res = await api.exchangeCode(code: code, codeVerifier: verifier);
+        final token = res['token'] as String?;
+        if (token != null && token.isNotEmpty) {
+          await prefs.remove(_prefCodeVerifier);
+          await loginWithToken(token);
+        }
+      } catch (e) {
+        state = state.copyWith(authError: '認証に失敗しました: $e');
+      }
       return;
     }
 
@@ -144,10 +197,26 @@ class AppNotifier extends Notifier<AppState> {
         oauthErrorMsg = 'OAuthログインに失敗しました ($errCode)';
       }
 
-      final urlToken = Uri.base.queryParameters['token'];
-      if (urlToken != null && urlToken.isNotEmpty) {
-        savedToken = urlToken;
-        await prefs.setString(_prefToken, urlToken);
+      final code = Uri.base.queryParameters['code'];
+      if (code != null && code.isNotEmpty) {
+        final verifier = prefs.getString(_prefCodeVerifier);
+        try {
+          final res = await api.exchangeCode(code: code, codeVerifier: verifier);
+          final token = res['token'] as String?;
+          if (token != null && token.isNotEmpty) {
+            savedToken = token;
+            await prefs.remove(_prefCodeVerifier);
+            await prefs.setString(_prefToken, token);
+          }
+        } catch (e) {
+          oauthErrorMsg = '認証に失敗しました: $e';
+        }
+      } else {
+        final urlToken = Uri.base.queryParameters['token'];
+        if (urlToken != null && urlToken.isNotEmpty) {
+          savedToken = urlToken;
+          await prefs.setString(_prefToken, urlToken);
+        }
       }
       clearAuthQueryParams();
     } else {
@@ -155,10 +224,26 @@ class AppNotifier extends Notifier<AppState> {
         final appLinks = AppLinks();
         final initialUri = await appLinks.getInitialLink();
         if (initialUri != null && initialUri.scheme == 'kotobalog') {
-          final urlToken = initialUri.queryParameters['token'];
-          if (urlToken != null && urlToken.isNotEmpty) {
-            savedToken = urlToken;
-            await prefs.setString(_prefToken, urlToken);
+          final code = initialUri.queryParameters['code'];
+          if (code != null && code.isNotEmpty) {
+            final verifier = prefs.getString(_prefCodeVerifier);
+            try {
+              final res = await api.exchangeCode(code: code, codeVerifier: verifier);
+              final token = res['token'] as String?;
+              if (token != null && token.isNotEmpty) {
+                savedToken = token;
+                await prefs.remove(_prefCodeVerifier);
+                await prefs.setString(_prefToken, token);
+              }
+            } catch (e) {
+              oauthErrorMsg = '認証に失敗しました: $e';
+            }
+          } else {
+            final urlToken = initialUri.queryParameters['token'];
+            if (urlToken != null && urlToken.isNotEmpty) {
+              savedToken = urlToken;
+              await prefs.setString(_prefToken, urlToken);
+            }
           }
           final errCode = initialUri.queryParameters['error'];
           final errIdentity = initialUri.queryParameters['identity'] ?? '';

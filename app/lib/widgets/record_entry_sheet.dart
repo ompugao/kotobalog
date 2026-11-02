@@ -4,7 +4,6 @@ import 'dart:typed_data';
 import 'package:audioplayers/audioplayers.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:http/http.dart' as http;
 import 'package:intl/intl.dart';
 import 'package:record/record.dart';
 import '../models/word_entry.dart';
@@ -299,6 +298,7 @@ class _RecordEntrySheetState extends ConsumerState<RecordEntrySheet> {
           notebookId: nb.id,
           entryId: widget.existingEntry!.id,
           url: url,
+          token: ref.read(appProvider).token,
         );
         if (!_isPlayingPreview || !mounted) return;
         await _previewPlayer!.play(source);
@@ -361,10 +361,9 @@ class _RecordEntrySheetState extends ConsumerState<RecordEntrySheet> {
 
     setState(() => _isLoadingRawAudio = true);
     try {
-      final url = ref.read(appProvider.notifier).api.rawAudioUrl(nb.id, existing.id);
-      final res = await http.get(Uri.parse(url));
-      if (res.statusCode == 200 && res.bodyBytes.isNotEmpty) {
-        final parsed = parseWavPcm16(res.bodyBytes);
+      final audioBytes = await ref.read(appProvider.notifier).api.getRawAudioBytes(nb.id, existing.id);
+      if (audioBytes.isNotEmpty) {
+        final parsed = parseWavPcm16(audioBytes);
         if (parsed != null) {
           final peaks = extractWaveformPeaks(parsed.pcmBytes, barCount: 48);
           final totalMs = parsed.durationMs;

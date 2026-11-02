@@ -1,7 +1,6 @@
 import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:url_launcher/url_launcher.dart';
 import '../providers/app_state.dart';
 
 class AuthScreen extends ConsumerStatefulWidget {
@@ -36,13 +35,7 @@ class _AuthScreenState extends ConsumerState<AuthScreen> {
       await notifier.setServerUrl(_serverCtrl.text);
     }
     final redirect = kIsWeb ? Uri.base.origin : 'kotobalog://auth';
-    final url = notifier.api.oauthUrl(provider, redirectUri: redirect);
-    final uri = Uri.parse(url);
-    await launchUrl(
-      uri,
-      webOnlyWindowName: kIsWeb ? '_self' : null,
-      mode: LaunchMode.externalApplication,
-    );
+    await notifier.startOAuthFlow(provider, redirectUri: redirect);
   }
 
   @override

@@ -91,13 +91,38 @@ class ApiClient {
     }
   }
 
-  String oauthUrl(String provider, {String? redirectUri}) {
+  String oauthUrl(
+    String provider, {
+    String? redirectUri,
+    String? codeChallenge,
+    String? codeChallengeMethod,
+  }) {
     final query = <String, String>{};
     if (redirectUri != null) {
       query['redirect_uri'] = redirectUri;
     }
+    if (codeChallenge != null && codeChallenge.isNotEmpty) {
+      query['code_challenge'] = codeChallenge;
+      query['code_challenge_method'] = codeChallengeMethod ?? 'S256';
+    }
     return _uri('/api/auth/oauth/$provider', query.isEmpty ? null : query)
         .toString();
+  }
+
+  Future<Map<String, dynamic>> exchangeCode({
+    required String code,
+    String? codeVerifier,
+  }) async {
+    final body = <String, dynamic>{'code': code};
+    if (codeVerifier != null && codeVerifier.isNotEmpty) {
+      body['code_verifier'] = codeVerifier;
+    }
+    final res = await http.post(
+      _uri('/api/auth/exchange'),
+      headers: {'Content-Type': 'application/json'},
+      body: jsonEncode(body),
+    );
+    return _decodeObj(res);
   }
 
   Future<User> getMe() async {
@@ -294,11 +319,35 @@ class ApiClient {
     return WordEntry.fromJson(_decodeObj(res));
   }
 
-  String audioUrl(String notebookId, String entryId) {
+  Future<Uint8List> getRawAudioBytes(String notebookId, String entryId) async {
+    final res = await http.get(
+      _uri('/api/notebooks/$notebookId/entries/$entryId/raw-audio'),
+      headers: _headers(),
+    );
+    if (res.statusCode >= 400) {
+      final body = utf8.decode(res.bodyBytes);
+      final data = body.isNotEmpty ? jsonDecode(body) : <String, dynamic>{};
+      final err = (data is Map && data['error'] != null)
+          ? data['error'].toString()
+          : '音声の取得に失敗しました (${res.statusCode})';
+      throw ApiException(err);
+    }
+    return res.bodyBytes;
+  }
+
+  Future<String> getMediaTicket(String notebookId, String entryId) async {
+    final res = await http.post(
+      _uri('/api/notebooks/$notebookId/entries/$entryId/media-ticket'),
+      headers: _headers(),
+    );
+    final data = _decodeObj(res);
+    return data['ticket'] as String? ?? '';
+  }
+
+  String audioUrl(String notebookId, String entryId, {String? ticket}) {
     final query = <String, String>{};
-    final isSameOriginWeb = kIsWeb && baseUrl == Uri.base.origin;
-    if (!isSameOriginWeb && token != null && token!.isNotEmpty) {
-      query['token'] = token!;
+    if (ticket != null && ticket.isNotEmpty) {
+      query['ticket'] = ticket;
     }
     return _uri(
       '/api/notebooks/$notebookId/entries/$entryId/audio',
@@ -306,11 +355,10 @@ class ApiClient {
     ).toString();
   }
 
-  String rawAudioUrl(String notebookId, String entryId) {
+  String rawAudioUrl(String notebookId, String entryId, {String? ticket}) {
     final query = <String, String>{};
-    final isSameOriginWeb = kIsWeb && baseUrl == Uri.base.origin;
-    if (!isSameOriginWeb && token != null && token!.isNotEmpty) {
-      query['token'] = token!;
+    if (ticket != null && ticket.isNotEmpty) {
+      query['ticket'] = ticket;
     }
     return _uri(
       '/api/notebooks/$notebookId/entries/$entryId/raw-audio',

@@ -39,6 +39,7 @@ class AudioCacheService {
     required String notebookId,
     required String entryId,
     required String url,
+    String? token,
   }) async {
     if (kIsWeb) {
       return UrlSource(url);
@@ -53,8 +54,12 @@ class AudioCacheService {
         return DeviceFileSource(file.path);
       }
 
-      // 未キャッシュの場合はダウンロードして保存
-      final res = await http.get(Uri.parse(url));
+      // 未キャッシュの場合はダウンロードして保存（Bearerトークンをヘッダーで安全に送信）
+      final headers = <String, String>{};
+      if (token != null && token.isNotEmpty) {
+        headers['Authorization'] = 'Bearer $token';
+      }
+      final res = await http.get(Uri.parse(url), headers: headers.isEmpty ? null : headers);
       if (res.statusCode == 200 && res.bodyBytes.isNotEmpty) {
         await file.writeAsBytes(res.bodyBytes, flush: true);
         return DeviceFileSource(file.path);
