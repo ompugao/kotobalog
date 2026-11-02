@@ -3,7 +3,9 @@ package api
 import (
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"crypto/subtle"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -135,31 +137,33 @@ func (s *Server) sanitizeRedirectURI(rawURI string) string {
 	return "/"
 }
 
-func (s *Server) generateOAuthState(redirectURI string) (stateToken string, nonce string, err error) {
+func (s *Server) generateOAuthState(redirectURI, codeChallenge, codeChallengeMethod string) (stateToken string, nonce string, err error) {
 	b := make([]byte, 16)
 	if _, err := rand.Read(b); err != nil {
 		return "", "", err
 	}
 	nonce = hex.EncodeToString(b)
 	claims := jwt.MapClaims{
-		"nonce":        nonce,
-		"redirect_uri": redirectURI,
-		"exp":          time.Now().Add(10 * time.Minute).Unix(),
-		"iat":          time.Now().Unix(),
+		"nonce":                 nonce,
+		"redirect_uri":          redirectURI,
+		"code_challenge":        codeChallenge,
+		"code_challenge_method": codeChallengeMethod,
+		"exp":                   time.Now().Add(10 * time.Minute).Unix(),
+		"iat":                   time.Now().Unix(),
 	}
 	tok := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
 	signed, err := tok.SignedString([]byte(s.cfg.JWTSecret))
 	return signed, nonce, err
 }
 
-func (s *Server) verifyOAuthState(r *http.Request) (string, error) {
+func (s *Server) verifyOAuthState(r *http.Request) (string, string, string, error) {
 	stateToken := r.URL.Query().Get("state")
 	if stateToken == "" {
-		return "/", fmt.Errorf("missing state")
+		return "/", "", "", fmt.Errorf("missing state")
 	}
 	cookie, err := r.Cookie(oauthStateCookieName)
 	if err != nil || cookie.Value == "" {
-		return "/", fmt.Errorf("missing state cookie")
+		return "/", "", "", fmt.Errorf("missing state cookie")
 	}
 
 	tok, err := jwt.Parse(stateToken, func(t *jwt.Token) (any, error) {
@@ -169,21 +173,23 @@ func (s *Server) verifyOAuthState(r *http.Request) (string, error) {
 		return []byte(s.cfg.JWTSecret), nil
 	})
 	if err != nil || !tok.Valid {
-		return "/", fmt.Errorf("invalid state token")
+		return "/", "", "", fmt.Errorf("invalid state token")
 	}
 
 	claims, ok := tok.Claims.(jwt.MapClaims)
 	if !ok {
-		return "/", fmt.Errorf("invalid state claims")
+		return "/", "", "", fmt.Errorf("invalid state claims")
 	}
 
 	nonce, _ := claims["nonce"].(string)
 	if nonce == "" || subtle.ConstantTimeCompare([]byte(nonce), []byte(cookie.Value)) != 1 {
-		return "/", fmt.Errorf("state nonce mismatch")
+		return "/", "", "", fmt.Errorf("state nonce mismatch")
 	}
 
 	rawRedirect, _ := claims["redirect_uri"].(string)
-	return s.sanitizeRedirectURI(rawRedirect), nil
+	codeChallenge, _ := claims["code_challenge"].(string)
+	codeChallengeMethod, _ := claims["code_challenge_method"].(string)
+	return s.sanitizeRedirectURI(rawRedirect), codeChallenge, codeChallengeMethod, nil
 }
 
 func (s *Server) handleOAuthRedirect(w http.ResponseWriter, r *http.Request) {
@@ -194,7 +200,12 @@ func (s *Server) handleOAuthRedirect(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	redirectURI := s.sanitizeRedirectURI(r.URL.Query().Get("redirect_uri"))
-	stateToken, nonce, err := s.generateOAuthState(redirectURI)
+	codeChallenge := strings.TrimSpace(r.URL.Query().Get("code_challenge"))
+	codeChallengeMethod := strings.TrimSpace(r.URL.Query().Get("code_challenge_method"))
+	if codeChallenge != "" && codeChallengeMethod == "" {
+		codeChallengeMethod = "S256"
+	}
+	stateToken, nonce, err := s.generateOAuthState(redirectURI, codeChallenge, codeChallengeMethod)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "OAuth stateの生成に失敗しました")
 		return
@@ -239,7 +250,7 @@ func (s *Server) handleOAuthCallback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	stateRedirect, err := s.verifyOAuthState(r)
+	stateRedirect, codeChallenge, codeChallengeMethod, err := s.verifyOAuthState(r)
 	http.SetCookie(w, &http.Cookie{
 		Name:     oauthStateCookieName,
 		Value:    "",
@@ -341,14 +352,121 @@ func (s *Server) handleOAuthCallback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	jwtToken, err := s.generateToken(userID, identity)
-	if err != nil {
-		redirectWithQuery(w, r, stateRedirect, map[string]string{"error": "token_error"})
+	// Generate single-use authorization exchange code (32 random bytes)
+	codeBytes := make([]byte, 32)
+	if _, err := rand.Read(codeBytes); err != nil {
+		redirectWithQuery(w, r, stateRedirect, map[string]string{"error": "server_error"})
+		return
+	}
+	authCode := hex.EncodeToString(codeBytes)
+
+	s.exchangeMu.Lock()
+	now := time.Now()
+	for k, v := range s.exchangeCodes {
+		if now.After(v.expiresAt) {
+			delete(s.exchangeCodes, k)
+		}
+	}
+	s.exchangeCodes[authCode] = authExchangeRecord{
+		userID:              userID,
+		identity:            identity,
+		codeChallenge:       codeChallenge,
+		codeChallengeMethod: codeChallengeMethod,
+		redirectURI:         stateRedirect,
+		expiresAt:           now.Add(2 * time.Minute),
+	}
+	s.exchangeMu.Unlock()
+
+	// Set session cookie for same-origin web
+	if jwtToken, err := s.generateToken(userID, identity); err == nil {
+		s.setSessionCookie(w, jwtToken, 30*24*3600)
+	}
+
+	// Redirect with ephemeral single-use code instead of long-lived token
+	redirectWithQuery(w, r, stateRedirect, map[string]string{"code": authCode})
+}
+
+func (s *Server) handleAuthExchange(w http.ResponseWriter, r *http.Request) {
+	r.Body = http.MaxBytesReader(w, r.Body, 16<<10)
+	var req struct {
+		Code         string `json:"code"`
+		CodeVerifier string `json:"code_verifier"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "リクエスト形式が不正です")
 		return
 	}
 
-	s.setSessionCookie(w, jwtToken, 30*24*3600)
-	redirectWithQuery(w, r, stateRedirect, map[string]string{"token": jwtToken})
+	req.Code = strings.TrimSpace(req.Code)
+	if req.Code == "" {
+		writeError(w, http.StatusBadRequest, "codeが必要です")
+		return
+	}
+
+	s.exchangeMu.Lock()
+	rec, exists := s.exchangeCodes[req.Code]
+	if exists {
+		delete(s.exchangeCodes, req.Code) // Single use
+	}
+	s.exchangeMu.Unlock()
+
+	if !exists || time.Now().After(rec.expiresAt) {
+		writeError(w, http.StatusBadRequest, "無効または期限切れの認証コードです")
+		return
+	}
+
+	// If PKCE was requested or if the redirect was a custom mobile scheme, verify code_verifier
+	if rec.codeChallenge != "" || rec.redirectURI == "kotobalog://auth" {
+		if rec.codeChallenge == "" {
+			writeError(w, http.StatusBadRequest, "PKCE code_challengeが設定されていません")
+			return
+		}
+		if req.CodeVerifier == "" {
+			writeError(w, http.StatusBadRequest, "code_verifierが必要です")
+			return
+		}
+
+		var verified bool
+		switch rec.codeChallengeMethod {
+		case "S256":
+			hash := sha256.Sum256([]byte(req.CodeVerifier))
+			computed := base64.RawURLEncoding.EncodeToString(hash[:])
+			verified = subtle.ConstantTimeCompare([]byte(computed), []byte(rec.codeChallenge)) == 1
+		case "plain":
+			verified = subtle.ConstantTimeCompare([]byte(req.CodeVerifier), []byte(rec.codeChallenge)) == 1
+		default:
+			writeError(w, http.StatusBadRequest, "未対応のcode_challenge_methodです")
+			return
+		}
+
+		if !verified {
+			writeError(w, http.StatusBadRequest, "code_verifierが一致しません")
+			return
+		}
+	}
+
+	if !s.allow.Allows(rec.identity) {
+		writeError(w, http.StatusForbidden, "ALLOWLISTで許可されていないアカウントです")
+		return
+	}
+
+	var user models.User
+	if err := s.db.Where("id = ?", rec.userID).First(&user).Error; err != nil {
+		writeError(w, http.StatusNotFound, "ユーザーが見つかりません")
+		return
+	}
+
+	token, err := s.generateToken(user.ID, user.Identity)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "トークン生成エラー")
+		return
+	}
+
+	s.setSessionCookie(w, token, 30*24*3600)
+	writeJSON(w, http.StatusOK, map[string]any{
+		"token": token,
+		"user":  user,
+	})
 }
 
 func (s *Server) upsertOAuthUser(provider, extID, identity, email, name, avatar string) (string, error) {

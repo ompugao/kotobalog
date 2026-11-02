@@ -4,11 +4,14 @@ import (
 	"context"
 	"crypto/subtle"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/golang-jwt/jwt/v5"
@@ -52,16 +55,44 @@ type Config struct {
 	GitHubClientSecret string
 }
 
+type authExchangeRecord struct {
+	userID              string
+	identity            string
+	codeChallenge       string
+	codeChallengeMethod string
+	redirectURI         string
+	expiresAt           time.Time
+}
+
 type Server struct {
-	db     *gorm.DB
-	cfg    Config
-	allow  Allowlist
-	router *http.ServeMux
+	db            *gorm.DB
+	cfg           Config
+	allow         Allowlist
+	router        *http.ServeMux
+	exchangeMu    sync.Mutex
+	exchangeCodes map[string]authExchangeRecord
+}
+
+func (s *Server) safeAudioPath(relPath string) (string, error) {
+	relPath = strings.TrimSpace(relPath)
+	if relPath == "" {
+		return "", errors.New("empty path")
+	}
+	cleanBase, err := filepath.Abs(s.cfg.AudioDir)
+	if err != nil {
+		return "", err
+	}
+	target := filepath.Clean(filepath.Join(cleanBase, relPath))
+	rel, err := filepath.Rel(cleanBase, target)
+	if err != nil || strings.HasPrefix(rel, "..") || rel == "." {
+		return "", errors.New("path traversal detected")
+	}
+	return target, nil
 }
 
 func NewServer(database *gorm.DB, cfg Config) (*Server, error) {
-	if cfg.JWTSecret == "" {
-		cfg.JWTSecret = "kotobalog-default-dev-secret-change-me"
+	if cfg.JWTSecret == "" || len(cfg.JWTSecret) < 32 {
+		return nil, fmt.Errorf("JWTSecret must be provided and be at least 32 characters")
 	}
 	if cfg.AudioDir == "" {
 		cfg.AudioDir = "./data/audio"
@@ -71,10 +102,11 @@ func NewServer(database *gorm.DB, cfg Config) (*Server, error) {
 	}
 
 	s := &Server{
-		db:     database,
-		cfg:    cfg,
-		allow:  ParseAllowlist(cfg.Allowlist),
-		router: http.NewServeMux(),
+		db:            database,
+		cfg:           cfg,
+		allow:         ParseAllowlist(cfg.Allowlist),
+		router:        http.NewServeMux(),
+		exchangeCodes: make(map[string]authExchangeRecord),
 	}
 	s.migrateLegacyRawAudio()
 	s.registerRoutes()
@@ -90,10 +122,26 @@ func (s *Server) isAllowedOrigin(origin string) bool {
 	if base != "" && strings.EqualFold(origin, base) {
 		return true
 	}
-	if base == "" || strings.HasPrefix(strings.ToLower(base), "http://localhost") || strings.HasPrefix(strings.ToLower(base), "http://127.0.0.1") {
+
+	// For local development, allow specific local dev ports only instead of arbitrary wildcard ports
+	baseU, err := url.Parse(base)
+	isLocalBase := base == "" || (err == nil && (baseU.Hostname() == "localhost" || baseU.Hostname() == "127.0.0.1"))
+	if isLocalBase {
 		lower := strings.ToLower(origin)
-		if strings.HasPrefix(lower, "http://localhost:") || lower == "http://localhost" ||
-			strings.HasPrefix(lower, "http://127.0.0.1:") || lower == "http://127.0.0.1" {
+		u, err := url.Parse(lower)
+		if err != nil {
+			return false
+		}
+		host := u.Hostname()
+		if host != "localhost" && host != "127.0.0.1" {
+			return false
+		}
+		port := u.Port()
+		if baseU != nil && baseU.Port() != "" && port == baseU.Port() {
+			return true
+		}
+		// Allow Flutter web dev server (8081) and standard KotobaLog ports (18081, 8080)
+		if port == "8081" || port == "18081" || port == "8080" {
 			return true
 		}
 	}
@@ -138,6 +186,7 @@ func (s *Server) registerRoutes() {
 	s.router.HandleFunc("POST /api/auth/logout", s.requireAuth(s.handleLogout))
 	s.router.HandleFunc("GET /api/auth/oauth/{provider}", s.handleOAuthRedirect)
 	s.router.HandleFunc("GET /api/auth/oauth/{provider}/callback", s.handleOAuthCallback)
+	s.router.HandleFunc("POST /api/auth/exchange", s.handleAuthExchange)
 
 	// Notebook routes ("ことば帳" - shared across all allowlisted family members)
 	s.router.HandleFunc("GET /api/notebooks", s.requireAuth(s.handleListNotebooks))
@@ -150,8 +199,9 @@ func (s *Server) registerRoutes() {
 	s.router.HandleFunc("PUT /api/notebooks/{id}/entries/{entryId}", s.requireAuth(s.handleUpdateEntry))
 	s.router.HandleFunc("DELETE /api/notebooks/{id}/entries/{entryId}", s.requireAuth(s.handleDeleteEntry))
 	s.router.HandleFunc("POST /api/notebooks/{id}/entries/{entryId}/restore", s.requireAuth(s.handleRestoreEntry))
-	s.router.HandleFunc("GET /api/notebooks/{id}/entries/{entryId}/audio", s.requireAuth(s.handleGetEntryAudio))
-	s.router.HandleFunc("GET /api/notebooks/{id}/entries/{entryId}/raw-audio", s.requireAuth(s.handleGetEntryRawAudio))
+	s.router.HandleFunc("POST /api/notebooks/{id}/entries/{entryId}/media-ticket", s.requireAuth(s.handleCreateMediaTicket))
+	s.router.HandleFunc("GET /api/notebooks/{id}/entries/{entryId}/audio", s.requireMediaAuth(s.handleGetEntryAudio))
+	s.router.HandleFunc("GET /api/notebooks/{id}/entries/{entryId}/raw-audio", s.requireMediaAuth(s.handleGetEntryRawAudio))
 
 	// Static files for Flutter Web if StaticDir exists
 	if s.cfg.StaticDir != "" {
@@ -198,8 +248,6 @@ func (s *Server) requireAuth(next http.HandlerFunc) http.HandlerFunc {
 			tokenStr = strings.TrimPrefix(authHeader, "Bearer ")
 		} else if c, err := r.Cookie(sessionCookieName); err == nil && c.Value != "" {
 			tokenStr = c.Value
-		} else if qToken := r.URL.Query().Get("token"); qToken != "" {
-			tokenStr = qToken
 		}
 
 		if tokenStr == "" {
@@ -261,6 +309,106 @@ func (s *Server) requireAuth(next http.HandlerFunc) http.HandlerFunc {
 		ctx := context.WithValue(r.Context(), userIDKey, sub)
 		next(w, r.WithContext(ctx))
 	}
+}
+
+func (s *Server) requireMediaAuth(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		tokenStr := ""
+		authHeader := r.Header.Get("Authorization")
+		if strings.HasPrefix(authHeader, "Bearer ") {
+			tokenStr = strings.TrimPrefix(authHeader, "Bearer ")
+		} else if c, err := r.Cookie(sessionCookieName); err == nil && c.Value != "" {
+			tokenStr = c.Value
+		}
+
+		if tokenStr != "" {
+			s.requireAuth(next)(w, r)
+			return
+		}
+
+		// Check short-lived scoped media ticket
+		ticketStr := r.URL.Query().Get("ticket")
+		if ticketStr == "" {
+			writeError(w, http.StatusUnauthorized, "認証が必要です")
+			return
+		}
+
+		token, err := jwt.Parse(ticketStr, func(t *jwt.Token) (any, error) {
+			if _, ok := t.Method.(*jwt.SigningMethodHMAC); !ok {
+				return nil, fmt.Errorf("unexpected signing method")
+			}
+			return []byte(s.cfg.JWTSecret), nil
+		})
+		if err != nil || !token.Valid {
+			writeError(w, http.StatusUnauthorized, "無効なメディアチケットです")
+			return
+		}
+
+		claims, ok := token.Claims.(jwt.MapClaims)
+		if !ok {
+			writeError(w, http.StatusUnauthorized, "無効なクレームです")
+			return
+		}
+
+		if scope, _ := claims["scope"].(string); scope != "media" {
+			writeError(w, http.StatusForbidden, "チケットのスコープが無効です")
+			return
+		}
+
+		notebookID := r.PathValue("id")
+		entryID := r.PathValue("entryId")
+		if claims["notebook_id"] != notebookID || claims["entry_id"] != entryID {
+			writeError(w, http.StatusForbidden, "チケットの対象エントリが一致しません")
+			return
+		}
+
+		sub, _ := claims["sub"].(string)
+		if sub == "" {
+			writeError(w, http.StatusUnauthorized, "ユーザーIDが見つかりません")
+			return
+		}
+
+		var user models.User
+		if err := s.db.Select("identity").Where("id = ?", sub).First(&user).Error; err != nil || !s.allow.Allows(user.Identity) {
+			writeError(w, http.StatusForbidden, "許可されていないユーザーです")
+			return
+		}
+
+		ctx := context.WithValue(r.Context(), userIDKey, sub)
+		next(w, r.WithContext(ctx))
+	}
+}
+
+func (s *Server) handleCreateMediaTicket(w http.ResponseWriter, r *http.Request) {
+	uid := currentUserID(r)
+	notebookID := r.PathValue("id")
+	entryID := r.PathValue("entryId")
+
+	ok, err := s.isNotebookMember(notebookID, uid)
+	if err != nil || !ok {
+		writeError(w, http.StatusForbidden, "このことば帳へのアクセス権限がありません")
+		return
+	}
+
+	claims := jwt.MapClaims{
+		"sub":         uid,
+		"scope":       "media",
+		"notebook_id": notebookID,
+		"entry_id":    entryID,
+		"exp":         time.Now().Add(2 * time.Minute).Unix(),
+		"iat":         time.Now().Unix(),
+	}
+	ticketToken := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
+	signed, err := ticketToken.SignedString([]byte(s.cfg.JWTSecret))
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "チケット生成エラー")
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"ticket":     signed,
+		"expires_in": 120,
+	})
 }
 
 func currentUserID(r *http.Request) string {

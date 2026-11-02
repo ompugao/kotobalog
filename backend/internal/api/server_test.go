@@ -2,6 +2,7 @@ package api
 
 import (
 	"bytes"
+	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
 	"net/http"
@@ -11,6 +12,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/ompugao/kotobalog/backend/internal/db"
 	"github.com/ompugao/kotobalog/backend/internal/models"
@@ -29,7 +31,7 @@ func setupTestServer(t *testing.T, allowlist string) *Server {
 	})
 
 	srv, err := NewServer(database, Config{
-		JWTSecret: "test-secret",
+		JWTSecret: "test-secret-at-least-32-chars-long!",
 		Allowlist: allowlist,
 		AudioDir:  t.TempDir(),
 	})
@@ -139,8 +141,17 @@ func TestAllowlistAndSharedNotebooksFlow(t *testing.T) {
 		t.Fatalf("unexpected search results: %+v", entries)
 	}
 
-	// 6. Fetch audio using ?token= query param
-	audioReq := httptest.NewRequest(http.MethodGet, "/api/notebooks/"+nb.ID+"/entries/"+createdEntry.ID+"/audio?token="+mamaToken, nil)
+	// 6. Fetching audio using ?token= query param is now rejected (401) to prevent log leakage
+	audioReqBad := httptest.NewRequest(http.MethodGet, "/api/notebooks/"+nb.ID+"/entries/"+createdEntry.ID+"/audio?token="+mamaToken, nil)
+	audioRecBad := httptest.NewRecorder()
+	srv.ServeHTTP(audioRecBad, audioReqBad)
+	if audioRecBad.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401 on legacy ?token= parameter, got %d", audioRecBad.Code)
+	}
+
+	// 6.1 Fetch audio using standard Bearer header
+	audioReq := httptest.NewRequest(http.MethodGet, "/api/notebooks/"+nb.ID+"/entries/"+createdEntry.ID+"/audio", nil)
+	audioReq.Header.Set("Authorization", "Bearer "+mamaToken)
 	audioRec := httptest.NewRecorder()
 	srv.ServeHTTP(audioRec, audioReq)
 	if audioRec.Code != http.StatusOK || !bytes.Equal(audioRec.Body.Bytes(), dummyWav) {
@@ -153,8 +164,29 @@ func TestAllowlistAndSharedNotebooksFlow(t *testing.T) {
 		t.Fatalf("expected X-Content-Type-Options: nosniff")
 	}
 
-	// 6.1 Fetch raw audio using ?token= query param
-	rawReq := httptest.NewRequest(http.MethodGet, "/api/notebooks/"+nb.ID+"/entries/"+createdEntry.ID+"/raw-audio?token="+mamaToken, nil)
+	// 6.2 Fetch audio using short-lived scoped media ticket
+	ticketRec := doJSON(t, srv, http.MethodPost, "/api/notebooks/"+nb.ID+"/entries/"+createdEntry.ID+"/media-ticket", mamaToken, nil)
+	if ticketRec.Code != http.StatusOK {
+		t.Fatalf("expected 200 on media-ticket, got %d: %s", ticketRec.Code, ticketRec.Body.String())
+	}
+	var ticketResp struct {
+		Ticket string `json:"ticket"`
+	}
+	_ = json.NewDecoder(ticketRec.Body).Decode(&ticketResp)
+	if ticketResp.Ticket == "" {
+		t.Fatalf("expected non-empty media ticket")
+	}
+
+	audioReqTicket := httptest.NewRequest(http.MethodGet, "/api/notebooks/"+nb.ID+"/entries/"+createdEntry.ID+"/audio?ticket="+ticketResp.Ticket, nil)
+	audioRecTicket := httptest.NewRecorder()
+	srv.ServeHTTP(audioRecTicket, audioReqTicket)
+	if audioRecTicket.Code != http.StatusOK || !bytes.Equal(audioRecTicket.Body.Bytes(), dummyWav) {
+		t.Fatalf("expected 200 via media ticket, got %d", audioRecTicket.Code)
+	}
+
+	// 6.3 Fetch raw audio using Bearer header
+	rawReq := httptest.NewRequest(http.MethodGet, "/api/notebooks/"+nb.ID+"/entries/"+createdEntry.ID+"/raw-audio", nil)
+	rawReq.Header.Set("Authorization", "Bearer "+mamaToken)
 	rawRec := httptest.NewRecorder()
 	srv.ServeHTTP(rawRec, rawReq)
 	if rawRec.Code != http.StatusOK || !bytes.Equal(rawRec.Body.Bytes(), dummyRawWav) {
@@ -202,7 +234,8 @@ func TestAllowlistAndSharedNotebooksFlow(t *testing.T) {
 	if goodRaw.Code != http.StatusOK {
 		t.Fatalf("expected 200 on update with raw audio, got %d: %s", goodRaw.Code, goodRaw.Body.String())
 	}
-	rawReq2 := httptest.NewRequest(http.MethodGet, "/api/notebooks/"+nb.ID+"/entries/"+createdEntry.ID+"/raw-audio?token="+mamaToken, nil)
+	rawReq2 := httptest.NewRequest(http.MethodGet, "/api/notebooks/"+nb.ID+"/entries/"+createdEntry.ID+"/raw-audio", nil)
+	rawReq2.Header.Set("Authorization", "Bearer "+mamaToken)
 	rawRec2 := httptest.NewRecorder()
 	srv.ServeHTTP(rawRec2, rawReq2)
 	if !bytes.Equal(rawRec2.Body.Bytes(), newRaw) {
@@ -220,7 +253,8 @@ func TestAllowlistAndSharedNotebooksFlow(t *testing.T) {
 	if retrimRec.Code != http.StatusOK {
 		t.Fatalf("expected 200 on re-trim, got %d: %s", retrimRec.Code, retrimRec.Body.String())
 	}
-	rawReq3 := httptest.NewRequest(http.MethodGet, "/api/notebooks/"+nb.ID+"/entries/"+createdEntry.ID+"/raw-audio?token="+mamaToken, nil)
+	rawReq3 := httptest.NewRequest(http.MethodGet, "/api/notebooks/"+nb.ID+"/entries/"+createdEntry.ID+"/raw-audio", nil)
+	rawReq3.Header.Set("Authorization", "Bearer "+mamaToken)
 	rawRec3 := httptest.NewRecorder()
 	srv.ServeHTTP(rawRec3, rawReq3)
 	if !bytes.Equal(rawRec3.Body.Bytes(), newRaw) {
@@ -294,14 +328,24 @@ func TestAllowlistAndSharedNotebooksFlow(t *testing.T) {
 		t.Fatalf("expected 1 active entry after restore, got %+v", activeEntries)
 	}
 
-	// 7. Uploading malicious audio_mime (e.g., text/html) must be sanitized to audio/wav
+	// 7. Uploading invalid non-audio data (e.g. text/html with script) must be rejected with 400 Bad Request
 	rec = doJSON(t, srv, http.MethodPost, "/api/notebooks/"+nb.ID+"/entries", papaToken, map[string]any{
 		"word":         "てすと",
 		"audio_base64": base64.StdEncoding.EncodeToString([]byte("<script>alert(1)</script>")),
 		"audio_mime":   "text/html",
 	})
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 on non-audio data, got %d", rec.Code)
+	}
+
+	// 7.1 Valid audio bytes with untrusted MIME is sanitized to audio/wav
+	rec = doJSON(t, srv, http.MethodPost, "/api/notebooks/"+nb.ID+"/entries", papaToken, map[string]any{
+		"word":         "てすと2",
+		"audio_base64": base64.StdEncoding.EncodeToString(dummyWav),
+		"audio_mime":   "text/html",
+	})
 	if rec.Code != http.StatusCreated {
-		t.Fatalf("expected 201, got %d", rec.Code)
+		t.Fatalf("expected 201 for valid WAV, got %d: %s", rec.Code, rec.Body.String())
 	}
 	var xssEntry models.WordEntry
 	_ = json.NewDecoder(rec.Body).Decode(&xssEntry)
@@ -450,4 +494,120 @@ func TestDryRunCopiedNASDatabase(t *testing.T) {
 	}
 	t.Logf("API returned %d active entries for notebook %q (first entry word=%q, creator=%q, spoken_at=%v)",
 		len(apiEntries), notebooks[0].ChildName, apiEntries[0].Word, apiEntries[0].CreatorName, apiEntries[0].SpokenAt)
+}
+
+func TestPKCEAndPathTraversalSecurity(t *testing.T) {
+	srv := setupTestServer(t, "github:alice")
+	aliceID, err := srv.upsertOAuthUser("github", "777", "github:alice", "alice@example.com", "Alice", "")
+	if err != nil {
+		t.Fatalf("upsert alice: %v", err)
+	}
+	aliceToken, _ := srv.generateToken(aliceID, "github:alice")
+
+	// 1. PKCE Code Exchange Verification
+	verifier := "my-secret-pkce-verifier-string-1234567890"
+	hash := sha256.Sum256([]byte(verifier))
+	challenge := base64.RawURLEncoding.EncodeToString(hash[:])
+
+	// Mock state with PKCE challenge and kotobalog://auth custom scheme
+	stateToken, _, err := srv.generateOAuthState("kotobalog://auth", challenge, "S256")
+	if err != nil {
+		t.Fatalf("generateOAuthState: %v", err)
+	}
+	_ = stateToken
+
+	// Simulate OAuth callback producing authCode
+	srv.exchangeMu.Lock()
+	testCode := "test-pkce-exchange-code-12345"
+	srv.exchangeCodes[testCode] = authExchangeRecord{
+		userID:              aliceID,
+		identity:            "github:alice",
+		codeChallenge:       challenge,
+		codeChallengeMethod: "S256",
+		redirectURI:         "kotobalog://auth",
+		expiresAt:           time.Now().Add(2 * time.Minute),
+	}
+	srv.exchangeMu.Unlock()
+
+	// 1.1 Attempt exchange with wrong code_verifier -> MUST fail
+	badExRec := doJSON(t, srv, http.MethodPost, "/api/auth/exchange", "", map[string]string{
+		"code":          testCode,
+		"code_verifier": "wrong-verifier",
+	})
+	if badExRec.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 on wrong code_verifier, got %d", badExRec.Code)
+	}
+
+	// 1.2 Re-inject code and exchange with correct verifier -> MUST succeed
+	srv.exchangeMu.Lock()
+	srv.exchangeCodes[testCode] = authExchangeRecord{
+		userID:              aliceID,
+		identity:            "github:alice",
+		codeChallenge:       challenge,
+		codeChallengeMethod: "S256",
+		redirectURI:         "kotobalog://auth",
+		expiresAt:           time.Now().Add(2 * time.Minute),
+	}
+	srv.exchangeMu.Unlock()
+
+	goodExRec := doJSON(t, srv, http.MethodPost, "/api/auth/exchange", "", map[string]string{
+		"code":          testCode,
+		"code_verifier": verifier,
+	})
+	if goodExRec.Code != http.StatusOK {
+		t.Fatalf("expected 200 on valid PKCE exchange, got %d: %s", goodExRec.Code, goodExRec.Body.String())
+	}
+	var exResp struct {
+		Token string      `json:"token"`
+		User  models.User `json:"user"`
+	}
+	_ = json.NewDecoder(goodExRec.Body).Decode(&exResp)
+	if exResp.Token == "" || exResp.User.ID != aliceID {
+		t.Fatalf("unexpected exchange response: %+v", exResp)
+	}
+
+	// 1.3 Replay attack: reusing the burned code -> MUST fail (400)
+	replayRec := doJSON(t, srv, http.MethodPost, "/api/auth/exchange", "", map[string]string{
+		"code":          testCode,
+		"code_verifier": verifier,
+	})
+	if replayRec.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 on replayed auth code, got %d", replayRec.Code)
+	}
+
+	// 2. Path Traversal Safeguards
+	// 2.1 Attempt create entry with directory traversal in notebook ID
+	badNbRec := doJSON(t, srv, http.MethodPost, "/api/notebooks/..%2f..%2fetc/entries", aliceToken, map[string]any{
+		"word": "hacker",
+	})
+	if badNbRec.Code != http.StatusBadRequest && badNbRec.Code != http.StatusNotFound && badNbRec.Code != http.StatusForbidden {
+		t.Fatalf("expected 400/403/404 for path traversal in notebook ID, got %d", badNbRec.Code)
+	}
+
+	// 2.2 Create legitimate entry
+	nbRec := doJSON(t, srv, http.MethodPost, "/api/notebooks", aliceToken, map[string]string{
+		"child_name": "テスト",
+		"birth_date": "2025-01-01",
+	})
+	var nb models.Notebook
+	_ = json.NewDecoder(nbRec.Body).Decode(&nb)
+
+	entryRec := doJSON(t, srv, http.MethodPost, "/api/notebooks/"+nb.ID+"/entries", aliceToken, map[string]any{
+		"word":         "パパ",
+		"audio_base64": base64.StdEncoding.EncodeToString([]byte("RIFFtestWAVEfmt ")),
+		"audio_mime":   "audio/wav",
+	})
+	var entry models.WordEntry
+	_ = json.NewDecoder(entryRec.Body).Decode(&entry)
+
+	// 2.3 Directly tamper database audio_path to attempt relative directory traversal escape
+	_ = srv.db.Model(&models.WordEntry{}).Where("id = ?", entry.ID).Update("audio_path", "../../../etc/passwd").Error
+
+	travReq := httptest.NewRequest(http.MethodGet, "/api/notebooks/"+nb.ID+"/entries/"+entry.ID+"/audio", nil)
+	travReq.Header.Set("Authorization", "Bearer "+aliceToken)
+	travRec := httptest.NewRecorder()
+	srv.ServeHTTP(travRec, travReq)
+	if travRec.Code != http.StatusForbidden {
+		t.Fatalf("expected 403 Forbidden on path traversal audio retrieval, got %d", travRec.Code)
+	}
 }
