@@ -1,6 +1,7 @@
 package api
 
 import (
+	"bytes"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -17,6 +18,42 @@ import (
 	"github.com/ompugao/kotobalog/backend/internal/models"
 	"gorm.io/gorm"
 )
+
+func isValidID(id string) bool {
+	id = strings.TrimSpace(id)
+	if id == "" || id == "." || id == ".." || len(id) > 64 {
+		return false
+	}
+	for _, r := range id {
+		if !((r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '-' || r == '_') {
+			return false
+		}
+	}
+	return true
+}
+
+func validateAudioMagicBytes(data []byte) (detectedMime string, ok bool) {
+	if len(data) < 12 {
+		return "", false
+	}
+	// RIFF container with WAVE
+	if bytes.HasPrefix(data, []byte("RIFF")) && (bytes.Equal(data[8:12], []byte("WAVE")) || bytes.Contains(data[:min(len(data), 64)], []byte("WAVE"))) {
+		return "audio/wav", true
+	}
+	// OggS
+	if bytes.HasPrefix(data, []byte("OggS")) {
+		return "audio/ogg", true
+	}
+	// WebM EBML
+	if bytes.HasPrefix(data, []byte{0x1a, 0x45, 0xdf, 0xa3}) {
+		return "audio/webm", true
+	}
+	// MP4 / M4A: offset 4..8 is "ftyp"
+	if bytes.Equal(data[4:8], []byte("ftyp")) {
+		return "audio/mp4", true
+	}
+	return "", false
+}
 
 type entryJSONRequest struct {
 	Word               string `json:"word"`
@@ -142,6 +179,10 @@ const (
 func (s *Server) handleCreateEntry(w http.ResponseWriter, r *http.Request) {
 	uid := currentUserID(r)
 	notebookID := r.PathValue("id")
+	if !isValidID(notebookID) {
+		writeError(w, http.StatusBadRequest, "無効なことば帳IDです")
+		return
+	}
 
 	ok, err := s.isNotebookMember(notebookID, uid)
 	if err != nil || !ok {
@@ -270,8 +311,25 @@ func (s *Server) handleCreateEntry(w http.ResponseWriter, r *http.Request) {
 	rawAudioPath := ""
 
 	if len(audioBytes) > 0 {
-		audioMime = sanitizeAudioMime(audioMime)
-		safeNbID := filepath.Base(notebookID)
+		detectedMime, ok := validateAudioMagicBytes(audioBytes)
+		if !ok {
+			writeError(w, http.StatusBadRequest, "有効な音声ファイル（WAV, WebM, OGG, M4A）ではありません")
+			return
+		}
+		if audioMime == "" {
+			audioMime = detectedMime
+		} else {
+			audioMime = sanitizeAudioMime(audioMime)
+		}
+
+		if len(rawAudioBytes) > 0 {
+			if _, ok := validateAudioMagicBytes(rawAudioBytes); !ok {
+				writeError(w, http.StatusBadRequest, "有効な元音声ファイル（WAV, WebM, OGG, M4A）ではありません")
+				return
+			}
+		}
+
+		safeNbID := notebookID
 		nbDir := filepath.Join(s.cfg.AudioDir, safeNbID)
 		if err := os.MkdirAll(nbDir, 0755); err != nil {
 			writeError(w, http.StatusInternalServerError, "音声保存ディレクトリの作成に失敗しました")
@@ -289,7 +347,7 @@ func (s *Server) handleCreateEntry(w http.ResponseWriter, r *http.Request) {
 			rawFilename := entryID + "_raw" + extForMime(audioMime)
 			rawFullPath := filepath.Join(nbDir, rawFilename)
 			if err := os.WriteFile(rawFullPath, rawAudioBytes, 0644); err != nil {
-				_ = os.Remove(filepath.Join(s.cfg.AudioDir, audioPath))
+				_ = os.Remove(fullPath)
 				writeError(w, http.StatusInternalServerError, "元音声ファイルの保存に失敗しました")
 				return
 			}
@@ -320,6 +378,12 @@ func (s *Server) handleCreateEntry(w http.ResponseWriter, r *http.Request) {
 		CreatedAt:          now,
 	}
 	if err := s.db.Create(&newEntry).Error; err != nil {
+		if audioPath != "" {
+			_ = os.Remove(filepath.Join(s.cfg.AudioDir, audioPath))
+		}
+		if rawAudioPath != "" {
+			_ = os.Remove(filepath.Join(s.cfg.AudioDir, rawAudioPath))
+		}
 		writeError(w, http.StatusInternalServerError, "ことばの保存に失敗しました")
 		return
 	}
@@ -351,6 +415,11 @@ func (s *Server) handleUpdateEntry(w http.ResponseWriter, r *http.Request) {
 	uid := currentUserID(r)
 	notebookID := r.PathValue("id")
 	entryID := r.PathValue("entryId")
+
+	if !isValidID(notebookID) || !isValidID(entryID) {
+		writeError(w, http.StatusBadRequest, "無効なIDです")
+		return
+	}
 
 	ok, err := s.isNotebookMember(notebookID, uid)
 	if err != nil || !ok {
@@ -404,8 +473,16 @@ func (s *Server) handleUpdateEntry(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusRequestEntityTooLarge, "音声ファイルのサイズが大きすぎます（上限20MB）")
 			return
 		}
-		audioMime := sanitizeAudioMime(req.AudioMime)
-		safeNbID := filepath.Base(notebookID)
+		detectedMime, ok := validateAudioMagicBytes(decoded)
+		if !ok {
+			writeError(w, http.StatusBadRequest, "有効な音声ファイル（WAV, WebM, OGG, M4A）ではありません")
+			return
+		}
+		audioMime := detectedMime
+		if req.AudioMime != "" {
+			audioMime = sanitizeAudioMime(req.AudioMime)
+		}
+		safeNbID := notebookID
 		nbDir := filepath.Join(s.cfg.AudioDir, safeNbID)
 		if err := os.MkdirAll(nbDir, 0755); err != nil {
 			writeError(w, http.StatusInternalServerError, "音声保存ディレクトリの作成に失敗しました")
@@ -440,8 +517,15 @@ func (s *Server) handleUpdateEntry(w http.ResponseWriter, r *http.Request) {
 				writeError(w, http.StatusRequestEntityTooLarge, "元音声ファイルのサイズが大きすぎます（上限20MB）")
 				return
 			}
+			if _, ok := validateAudioMagicBytes(rawDecoded); !ok {
+				writeError(w, http.StatusBadRequest, "有効な元音声ファイル（WAV, WebM, OGG, M4A）ではありません")
+				return
+			}
 			rawFilename := entryID + "_raw" + extForMime(audioMime)
 			rawFullPath := filepath.Join(nbDir, rawFilename)
+			if existing.RawAudioPath != "" && existing.RawAudioPath != filepath.Join(safeNbID, rawFilename) {
+				_ = os.Remove(filepath.Join(s.cfg.AudioDir, existing.RawAudioPath))
+			}
 			if err := os.WriteFile(rawFullPath, rawDecoded, 0644); err != nil {
 				writeError(w, http.StatusInternalServerError, "元音声ファイルの保存に失敗しました")
 				return
@@ -558,6 +642,11 @@ func (s *Server) handleGetEntryAudio(w http.ResponseWriter, r *http.Request) {
 	notebookID := r.PathValue("id")
 	entryID := r.PathValue("entryId")
 
+	if !isValidID(notebookID) || !isValidID(entryID) {
+		writeError(w, http.StatusBadRequest, "無効なIDです")
+		return
+	}
+
 	ok, err := s.isNotebookMember(notebookID, uid)
 	if err != nil || !ok {
 		writeError(w, http.StatusForbidden, "このことば帳へのアクセス権限がありません")
@@ -574,7 +663,11 @@ func (s *Server) handleGetEntryAudio(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	fullPath := filepath.Join(s.cfg.AudioDir, filepath.Clean(existing.AudioPath))
+	fullPath, err := s.safeAudioPath(existing.AudioPath)
+	if err != nil {
+		writeError(w, http.StatusForbidden, "無効なファイルパスです")
+		return
+	}
 	safeMime := sanitizeAudioMime(existing.AudioMime)
 	w.Header().Set("Content-Type", safeMime)
 	w.Header().Set("X-Content-Type-Options", "nosniff")
@@ -590,7 +683,11 @@ func (s *Server) migrateLegacyRawAudio() {
 	}
 
 	for _, entry := range entries {
-		srcPath := filepath.Join(s.cfg.AudioDir, filepath.Clean(entry.AudioPath))
+		srcPath, err := s.safeAudioPath(entry.AudioPath)
+		if err != nil {
+			log.Printf("legacy raw audio migration: skip entry %s: invalid path: %v", entry.ID, err)
+			continue
+		}
 		srcBytes, err := os.ReadFile(srcPath)
 		if err != nil || len(srcBytes) == 0 {
 			log.Printf("legacy raw audio migration: skip entry %s: cannot read %s: %v", entry.ID, srcPath, err)
@@ -600,7 +697,11 @@ func (s *Server) migrateLegacyRawAudio() {
 		ext := filepath.Ext(entry.AudioPath)
 		dir := filepath.Dir(entry.AudioPath)
 		rawRelPath := filepath.Join(dir, entry.ID+"_raw"+ext)
-		rawFullPath := filepath.Join(s.cfg.AudioDir, rawRelPath)
+		rawFullPath, err := s.safeAudioPath(rawRelPath)
+		if err != nil {
+			log.Printf("legacy raw audio migration: skip entry %s: invalid raw path: %v", entry.ID, err)
+			continue
+		}
 
 		if err := os.WriteFile(rawFullPath, srcBytes, 0644); err != nil {
 			log.Printf("legacy raw audio migration: entry %s: write failed: %v", entry.ID, err)
@@ -629,6 +730,11 @@ func (s *Server) handleGetEntryRawAudio(w http.ResponseWriter, r *http.Request) 
 	notebookID := r.PathValue("id")
 	entryID := r.PathValue("entryId")
 
+	if !isValidID(notebookID) || !isValidID(entryID) {
+		writeError(w, http.StatusBadRequest, "無効なIDです")
+		return
+	}
+
 	ok, err := s.isNotebookMember(notebookID, uid)
 	if err != nil || !ok {
 		writeError(w, http.StatusForbidden, "このことば帳へのアクセス権限がありません")
@@ -655,7 +761,11 @@ func (s *Server) handleGetEntryRawAudio(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	fullPath := filepath.Join(s.cfg.AudioDir, filepath.Clean(targetPath))
+	fullPath, err := s.safeAudioPath(targetPath)
+	if err != nil {
+		writeError(w, http.StatusForbidden, "無効なファイルパスです")
+		return
+	}
 	safeMime := sanitizeAudioMime(existing.AudioMime)
 	w.Header().Set("Content-Type", safeMime)
 	w.Header().Set("X-Content-Type-Options", "nosniff")
