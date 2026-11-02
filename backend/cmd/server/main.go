@@ -1,6 +1,8 @@
 package main
 
 import (
+	"crypto/rand"
+	"encoding/hex"
 	"log"
 	"net/http"
 	"os"
@@ -38,16 +40,23 @@ func main() {
 
 	jwtSecret := os.Getenv("JWT_SECRET")
 	devToken := os.Getenv("DEV_TOKEN")
-	if jwtSecret == "" || jwtSecret == "please-change-this-secret-in-production" ||
-		jwtSecret == "kotobalog-dev-secret-key" || jwtSecret == "kotobalog-default-dev-secret-change-me" ||
-		len(jwtSecret) < 32 {
+	isWeakSecret := jwtSecret == "" ||
+		jwtSecret == "please-change-this-secret-in-production" ||
+		jwtSecret == "kotobalog-dev-secret-key" ||
+		jwtSecret == "kotobalog-default-dev-secret-change-me" ||
+		len(jwtSecret) < 32
+
+	if isWeakSecret {
 		if devToken == "" {
 			log.Fatalf("FATAL: JWT_SECRET must be set to a strong secret of at least 32 characters")
 		}
-		log.Printf("WARNING: using insecure JWT_SECRET in DEV_TOKEN mode")
-		if jwtSecret == "" {
-			jwtSecret = "kotobalog-dev-secret-key"
+		// In DEV_TOKEN mode, generate an unguessable ephemeral 32-byte secret instead of using a known hardcoded string
+		randomBytes := make([]byte, 32)
+		if _, err := rand.Read(randomBytes); err != nil {
+			log.Fatalf("FATAL: failed to generate ephemeral jwt secret: %v", err)
 		}
+		jwtSecret = hex.EncodeToString(randomBytes)
+		log.Printf("WARNING: generated unguessable ephemeral JWT_SECRET for DEV_TOKEN session")
 	}
 
 	cfg := api.Config{
