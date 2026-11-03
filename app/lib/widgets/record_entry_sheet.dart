@@ -837,11 +837,7 @@ class _RecordEntrySheetState extends ConsumerState<RecordEntrySheet> {
                 ),
               ),
             ),
-            const SizedBox(height: 10),
-            Center(
-              child: _buildMicSelectorChip(context, themeColor),
-            ),
-            const SizedBox(height: 6),
+            const SizedBox(height: 12),
             Row(
               mainAxisAlignment: MainAxisAlignment.spaceBetween,
               children: [
