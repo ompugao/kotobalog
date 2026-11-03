@@ -160,7 +160,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
                     children: [
                       Icon(Icons.restore_from_trash, size: 18),
                       SizedBox(width: 8),
-                      Text('ゴミ箱（削除したことばを復元）'),
+                      Text('ゴミ箱'),
                     ],
                   ),
                 ),
@@ -170,7 +170,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
                   children: [
                     Icon(Icons.badge_outlined, size: 18),
                     SizedBox(width: 8),
-                    Text('表示名を変更（パパ・ママ等）'),
+                    Text('自分の名前を変更'),
                   ],
                 ),
               ),
