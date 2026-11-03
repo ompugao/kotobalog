@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../providers/app_state.dart';
 import '../widgets/calendar_view.dart';
+import '../widgets/mic_selector_sheet.dart';
 import '../widgets/notebook_sheets.dart';
 import '../widgets/record_entry_sheet.dart';
 import '../widgets/timeline_view.dart';
@@ -119,6 +120,8 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
                   ),
                   builder: (_) => TrashSheet(notebook: nb),
                 );
+              } else if (value == 'mic') {
+                MicSelectorSheet.show(context);
               } else if (value == 'rename') {
                 showDialog(
                   context: context,
@@ -164,6 +167,16 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
                     ],
                   ),
                 ),
+              const PopupMenuItem(
+                value: 'mic',
+                child: Row(
+                  children: [
+                    Icon(Icons.mic_none_outlined, size: 18),
+                    SizedBox(width: 8),
+                    Text('マイク設定'),
+                  ],
+                ),
+              ),
               const PopupMenuItem(
                 value: 'rename',
                 child: Row(

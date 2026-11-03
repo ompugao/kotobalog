@@ -8,8 +8,11 @@ import 'package:intl/intl.dart';
 import 'package:record/record.dart';
 import '../models/word_entry.dart';
 import '../providers/app_state.dart';
+import '../providers/audio_device_provider.dart';
 import '../services/audio_cache_service.dart';
+import '../services/audio_device_service.dart';
 import '../services/wav_encoder.dart';
+import 'mic_selector_sheet.dart';
 
 class RecordEntrySheet extends ConsumerStatefulWidget {
   final WordEntry? existingEntry;
@@ -37,6 +40,8 @@ class _RecordEntrySheetState extends ConsumerState<RecordEntrySheet> {
   AudioPlayer? _previewPlayer;
   StreamSubscription<Uint8List>? _streamSub;
   Timer? _timer;
+
+  InputDevice? _selectedDevice;
 
   bool _isRecording = false;
   bool _isStartingRecorder = false;
@@ -72,6 +77,7 @@ class _RecordEntrySheetState extends ConsumerState<RecordEntrySheet> {
     _meaningFocusNode = FocusNode();
     _spokenAt = existing?.spokenAt.toLocal() ?? DateTime.now();
     _keepExistingAudio = existing?.hasAudio ?? false;
+    _selectedDevice = ref.read(audioDeviceProvider).resolvedDevice;
 
     if (!_isEditing) {
       // 新規記録時はシートが開いた瞬間に録音を開始する
@@ -120,11 +126,13 @@ class _RecordEntrySheetState extends ConsumerState<RecordEntrySheet> {
       }
 
       _pcmBuffer.clear();
+      final device = _selectedDevice ?? ref.read(audioDeviceProvider).resolvedDevice;
       final stream = await _recorder.startStream(
-        const RecordConfig(
+        RecordConfig(
           encoder: AudioEncoder.pcm16bits,
           sampleRate: _sampleRate,
           numChannels: _numChannels,
+          device: device,
         ),
       );
 
@@ -232,6 +240,112 @@ class _RecordEntrySheetState extends ConsumerState<RecordEntrySheet> {
         }
       });
     }
+  }
+
+  Future<void> _openMicSelector() async {
+    final currentDev =
+        _selectedDevice ?? ref.read(audioDeviceProvider).resolvedDevice;
+    final newDev = await MicSelectorSheet.show(
+      context,
+      currentDevice: currentDev,
+    );
+    if (!mounted) return;
+    if (newDev != _selectedDevice) {
+      await _changeAudioDevice(newDev);
+    }
+  }
+
+  Future<void> _changeAudioDevice(InputDevice? newDevice) async {
+    setState(() {
+      _selectedDevice = newDevice;
+    });
+
+    if (_isRecording) {
+      // 録音中の場合は新デバイスで即座に再開
+      await _stopPreview();
+      _timer?.cancel();
+      await _streamSub?.cancel();
+      _streamSub = null;
+      try {
+        await _recorder.stop();
+      } catch (_) {}
+      _pcmBuffer.clear();
+
+      await _startRecording(autoStart: false);
+
+      if (mounted) {
+        final name = newDevice != null
+            ? AudioDeviceHelper.formatDeviceName(newDevice)
+            : 'システム標準マイク';
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('「$name」に切り替えて録音を再開しました'),
+            duration: const Duration(seconds: 2),
+          ),
+        );
+      }
+    }
+  }
+
+  Widget _buildMicSelectorChip(BuildContext context, Color themeColor) {
+    final devState = ref.watch(audioDeviceProvider);
+    final device = _selectedDevice ?? devState.resolvedDevice;
+    final label = device != null
+        ? devState.activeDeviceDisplayName
+        : '自動（システム標準）';
+    final icon = device != null
+        ? AudioDeviceHelper.getDeviceIcon(device.type)
+        : Icons.tune;
+    final isExternal =
+        device != null && AudioDeviceHelper.isExternalType(device.type);
+
+    return InkWell(
+      onTap: _openMicSelector,
+      borderRadius: BorderRadius.circular(20),
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+        decoration: BoxDecoration(
+          color: Colors.white,
+          borderRadius: BorderRadius.circular(20),
+          border: Border.all(
+            color: isExternal ? themeColor : Colors.brown.withValues(alpha: 0.25),
+            width: isExternal ? 1.5 : 1.0,
+          ),
+          boxShadow: [
+            BoxShadow(
+              color: Colors.black.withValues(alpha: 0.05),
+              blurRadius: 4,
+              offset: const Offset(0, 2),
+            ),
+          ],
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(
+              icon,
+              size: 16,
+              color: isExternal ? themeColor : Colors.brown.shade700,
+            ),
+            const SizedBox(width: 6),
+            ConstrainedBox(
+              constraints: const BoxConstraints(maxWidth: 220),
+              child: Text(
+                label,
+                overflow: TextOverflow.ellipsis,
+                style: TextStyle(
+                  fontSize: 12,
+                  fontWeight: FontWeight.w600,
+                  color: Colors.brown.shade800,
+                ),
+              ),
+            ),
+            const SizedBox(width: 4),
+            Icon(Icons.arrow_drop_down, size: 18, color: Colors.brown.shade600),
+          ],
+        ),
+      ),
+    );
   }
 
   Uint8List? _buildTrimmedWavBytes() {
@@ -575,7 +689,11 @@ class _RecordEntrySheetState extends ConsumerState<RecordEntrySheet> {
             ),
           ),
         ),
-        const SizedBox(height: 24),
+        const SizedBox(height: 12),
+        Center(
+          child: _buildMicSelectorChip(context, const Color(0xFFFF8A65)),
+        ),
+        const SizedBox(height: 20),
         FilledButton.icon(
           style: FilledButton.styleFrom(
             backgroundColor: Colors.red.shade600,
@@ -719,7 +837,11 @@ class _RecordEntrySheetState extends ConsumerState<RecordEntrySheet> {
                 ),
               ),
             ),
-            const SizedBox(height: 8),
+            const SizedBox(height: 10),
+            Center(
+              child: _buildMicSelectorChip(context, themeColor),
+            ),
+            const SizedBox(height: 6),
             Row(
               mainAxisAlignment: MainAxisAlignment.spaceBetween,
               children: [
