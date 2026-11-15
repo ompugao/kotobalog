@@ -10,6 +10,7 @@ backend/web_dist/
 .env
 mise.local.toml
 *.local.toml
+AGENTS.md
 
 # Go
 backend/kotobalog-server
