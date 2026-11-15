@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/ompugao/kotobalog/backend/internal/audio"
 	"github.com/ompugao/kotobalog/backend/internal/models"
 	"gorm.io/gorm"
 )
@@ -35,6 +36,10 @@ func isValidID(id string) bool {
 func validateAudioMagicBytes(data []byte) (detectedMime string, ok bool) {
 	if len(data) < 12 {
 		return "", false
+	}
+	// FLAC stream: offset 0..4 is "fLaC"
+	if bytes.HasPrefix(data, []byte("fLaC")) {
+		return "audio/flac", true
 	}
 	// RIFF container with WAVE
 	if bytes.HasPrefix(data, []byte("RIFF")) && (bytes.Equal(data[8:12], []byte("WAVE")) || bytes.Contains(data[:min(len(data), 64)], []byte("WAVE"))) {
@@ -144,6 +149,8 @@ func parseSpokenAt(s string) time.Time {
 func sanitizeAudioMime(mime string) string {
 	mime = strings.ToLower(strings.TrimSpace(mime))
 	switch {
+	case strings.Contains(mime, "flac"):
+		return "audio/flac"
 	case strings.Contains(mime, "wav"):
 		return "audio/wav"
 	case strings.Contains(mime, "webm"):
@@ -159,6 +166,8 @@ func sanitizeAudioMime(mime string) string {
 
 func extForMime(mime string) string {
 	switch sanitizeAudioMime(mime) {
+	case "audio/flac":
+		return ".flac"
 	case "audio/webm":
 		return ".webm"
 	case "audio/ogg":
@@ -170,11 +179,137 @@ func extForMime(mime string) string {
 	}
 }
 
+func mimeForPath(filePath, fallbackMime string) string {
+	ext := strings.ToLower(strings.TrimPrefix(filepath.Ext(filePath), "."))
+	if ext != "" {
+		return sanitizeAudioMime(ext)
+	}
+	return sanitizeAudioMime(fallbackMime)
+}
+
 const (
 	maxAudioBytes     = 20 << 20 // 20 MB
 	maxEntryBodyBytes = 56 << 20 // 56 MB (allows base64 overhead for two 20 MB audio files)
 	maxMetaBodyBytes  = 64 << 10 // 64 KB
 )
+
+type parsedEntryInput struct {
+	word               string
+	meaning            string
+	spokenAtRaw        string
+	audioMime          string
+	audioBytes         []byte
+	rawAudioBytes      []byte
+	audioDurationMs    int
+	rawAudioDurationMs int
+	trimStartMs        int
+	trimEndMs          int
+	removeAudio        bool
+}
+
+func parseEntryRequest(r *http.Request) (*parsedEntryInput, int, string) {
+	contentType := r.Header.Get("Content-Type")
+	if strings.HasPrefix(contentType, "multipart/form-data") {
+		if err := r.ParseMultipartForm(maxAudioBytes); err != nil {
+			return nil, http.StatusBadRequest, "マルチパートデータの解析に失敗しました（サイズ上限超過または形式不正）"
+		}
+		in := &parsedEntryInput{
+			word:        strings.TrimSpace(r.FormValue("word")),
+			meaning:     strings.TrimSpace(r.FormValue("meaning")),
+			spokenAtRaw: strings.TrimSpace(r.FormValue("spoken_at")),
+			audioMime:   r.FormValue("audio_mime"),
+			removeAudio: r.FormValue("remove_audio") == "1" || r.FormValue("remove_audio") == "true",
+		}
+		in.audioDurationMs, _ = strconv.Atoi(r.FormValue("audio_duration_ms"))
+		in.rawAudioDurationMs, _ = strconv.Atoi(r.FormValue("raw_audio_duration_ms"))
+		in.trimStartMs, _ = strconv.Atoi(r.FormValue("trim_start_ms"))
+		in.trimEndMs, _ = strconv.Atoi(r.FormValue("trim_end_ms"))
+
+		file, header, err := r.FormFile("audio")
+		if err == nil {
+			defer file.Close()
+			data, readErr := io.ReadAll(io.LimitReader(file, maxAudioBytes+1))
+			if readErr != nil || len(data) > maxAudioBytes {
+				return nil, http.StatusRequestEntityTooLarge, "音声ファイルのサイズが大きすぎます（上限20MB）"
+			}
+			in.audioBytes = data
+			if in.audioMime == "" {
+				in.audioMime = header.Header.Get("Content-Type")
+			}
+			if in.audioMime == "" {
+				ext := strings.ToLower(filepath.Ext(header.Filename))
+				in.audioMime = sanitizeAudioMime(ext)
+			}
+		}
+
+		rawFile, _, err := r.FormFile("raw_audio")
+		if err == nil {
+			defer rawFile.Close()
+			rawData, readErr := io.ReadAll(io.LimitReader(rawFile, maxAudioBytes+1))
+			if readErr != nil {
+				return nil, http.StatusBadRequest, "元音声データの読み込みに失敗しました"
+			}
+			if len(rawData) > maxAudioBytes {
+				return nil, http.StatusRequestEntityTooLarge, "元音声ファイルのサイズが大きすぎます（上限20MB）"
+			}
+			in.rawAudioBytes = rawData
+		}
+		return in, 0, ""
+	}
+
+	var req entryJSONRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		return nil, http.StatusBadRequest, "リクエスト形式が不正です（またはサイズ上限超過）"
+	}
+	in := &parsedEntryInput{
+		word:               strings.TrimSpace(req.Word),
+		meaning:            strings.TrimSpace(req.Meaning),
+		spokenAtRaw:        strings.TrimSpace(req.SpokenAt),
+		audioMime:          req.AudioMime,
+		audioDurationMs:    req.AudioDurationMs,
+		rawAudioDurationMs: req.RawAudioDurationMs,
+		trimStartMs:        req.TrimStartMs,
+		trimEndMs:          req.TrimEndMs,
+		removeAudio:        req.RemoveAudio,
+	}
+	if req.AudioBase64 != "" {
+		decoded, err := base64.StdEncoding.DecodeString(req.AudioBase64)
+		if err != nil {
+			return nil, http.StatusBadRequest, "音声データのデコードに失敗しました"
+		}
+		if len(decoded) > maxAudioBytes {
+			return nil, http.StatusRequestEntityTooLarge, "音声ファイルのサイズが大きすぎます（上限20MB）"
+		}
+		in.audioBytes = decoded
+		if in.audioMime == "" {
+			in.audioMime = "audio/wav"
+		}
+	}
+	if req.RawAudioBase64 != "" {
+		decoded, err := base64.StdEncoding.DecodeString(req.RawAudioBase64)
+		if err != nil {
+			return nil, http.StatusBadRequest, "元音声データのデコードに失敗しました"
+		}
+		if len(decoded) > maxAudioBytes {
+			return nil, http.StatusRequestEntityTooLarge, "元音声ファイルのサイズが大きすぎます（上限20MB）"
+		}
+		in.rawAudioBytes = decoded
+	}
+	return in, 0, ""
+}
+
+func validateAndVerifyAudioBytes(data []byte) (detectedMime string, errMsg string) {
+	detectedMime, ok := validateAudioMagicBytes(data)
+	if !ok {
+		return "", "有効な音声ファイル（FLAC, WAV, WebM, OGG, M4A）ではありません"
+	}
+	if detectedMime == "audio/flac" {
+		if _, err := audio.VerifyFLAC(data); err != nil {
+			return "", "FLAC音声データが破損しているか形式が不正です"
+		}
+	}
+	return detectedMime, ""
+}
 
 func (s *Server) handleCreateEntry(w http.ResponseWriter, r *http.Request) {
 	uid := currentUserID(r)
@@ -192,139 +327,37 @@ func (s *Server) handleCreateEntry(w http.ResponseWriter, r *http.Request) {
 
 	r.Body = http.MaxBytesReader(w, r.Body, maxEntryBodyBytes)
 
-	var word, meaning, audioMime string
-	var spokenAt time.Time
-	var audioBytes []byte
-	var rawAudioBytes []byte
-	var audioDurationMs int
-	var rawAudioDurationMs int
-	var trimStartMs int
-	var trimEndMs int
-
-	contentType := r.Header.Get("Content-Type")
-	if strings.HasPrefix(contentType, "multipart/form-data") {
-		if err := r.ParseMultipartForm(maxAudioBytes); err != nil {
-			writeError(w, http.StatusBadRequest, "マルチパートデータの解析に失敗しました（サイズ上限超過または形式不正）")
-			return
-		}
-		word = strings.TrimSpace(r.FormValue("word"))
-		meaning = strings.TrimSpace(r.FormValue("meaning"))
-		spokenAt = parseSpokenAt(r.FormValue("spoken_at"))
-		audioDurationMs, _ = strconv.Atoi(r.FormValue("audio_duration_ms"))
-		rawAudioDurationMs, _ = strconv.Atoi(r.FormValue("raw_audio_duration_ms"))
-		trimStartMs, _ = strconv.Atoi(r.FormValue("trim_start_ms"))
-		trimEndMs, _ = strconv.Atoi(r.FormValue("trim_end_ms"))
-		audioMime = r.FormValue("audio_mime")
-
-		file, header, err := r.FormFile("audio")
-		if err == nil {
-			defer file.Close()
-			data, readErr := io.ReadAll(io.LimitReader(file, maxAudioBytes+1))
-			if readErr != nil || len(data) > maxAudioBytes {
-				writeError(w, http.StatusRequestEntityTooLarge, "音声ファイルのサイズが大きすぎます（上限20MB）")
-				return
-			}
-			audioBytes = data
-			if audioMime == "" {
-				audioMime = header.Header.Get("Content-Type")
-			}
-			if audioMime == "" {
-				ext := strings.ToLower(filepath.Ext(header.Filename))
-				switch ext {
-				case ".wav":
-					audioMime = "audio/wav"
-				case ".m4a":
-					audioMime = "audio/mp4"
-				case ".webm":
-					audioMime = "audio/webm"
-				default:
-					audioMime = "audio/wav"
-				}
-			}
-		}
-
-		rawFile, _, err := r.FormFile("raw_audio")
-		if err == nil {
-			defer rawFile.Close()
-			rawData, readErr := io.ReadAll(io.LimitReader(rawFile, maxAudioBytes+1))
-			if readErr != nil {
-				writeError(w, http.StatusBadRequest, "元音声データの読み込みに失敗しました")
-				return
-			}
-			if len(rawData) > maxAudioBytes {
-				writeError(w, http.StatusRequestEntityTooLarge, "元音声ファイルのサイズが大きすぎます（上限20MB）")
-				return
-			}
-			rawAudioBytes = rawData
-		}
-	} else {
-		var req entryJSONRequest
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			writeError(w, http.StatusBadRequest, "リクエスト形式が不正です（またはサイズ上限超過）")
-			return
-		}
-		word = strings.TrimSpace(req.Word)
-		meaning = strings.TrimSpace(req.Meaning)
-		spokenAt = parseSpokenAt(req.SpokenAt)
-		audioDurationMs = req.AudioDurationMs
-		rawAudioDurationMs = req.RawAudioDurationMs
-		trimStartMs = req.TrimStartMs
-		trimEndMs = req.TrimEndMs
-		audioMime = req.AudioMime
-		if req.AudioBase64 != "" {
-			decoded, err := base64.StdEncoding.DecodeString(req.AudioBase64)
-			if err != nil {
-				writeError(w, http.StatusBadRequest, "音声データのデコードに失敗しました")
-				return
-			}
-			if len(decoded) > maxAudioBytes {
-				writeError(w, http.StatusRequestEntityTooLarge, "音声ファイルのサイズが大きすぎます（上限20MB）")
-				return
-			}
-			audioBytes = decoded
-			if audioMime == "" {
-				audioMime = "audio/wav"
-			}
-		}
-		if req.RawAudioBase64 != "" {
-			decoded, err := base64.StdEncoding.DecodeString(req.RawAudioBase64)
-			if err != nil {
-				writeError(w, http.StatusBadRequest, "元音声データのデコードに失敗しました")
-				return
-			}
-			if len(decoded) > maxAudioBytes {
-				writeError(w, http.StatusRequestEntityTooLarge, "元音声ファイルのサイズが大きすぎます（上限20MB）")
-				return
-			}
-			rawAudioBytes = decoded
-		}
+	in, status, errMsg := parseEntryRequest(r)
+	if status != 0 {
+		writeError(w, status, errMsg)
+		return
 	}
-
-	if word == "" {
+	if in.word == "" {
 		writeError(w, http.StatusBadRequest, "「ことば」を入力してください")
 		return
 	}
 
+	spokenAt := parseSpokenAt(in.spokenAtRaw)
 	entryID := uuid.NewString()
 	now := time.Now().UTC()
 	audioPath := ""
 	rawAudioPath := ""
+	audioMime := ""
 
-	if len(audioBytes) > 0 {
-		detectedMime, ok := validateAudioMagicBytes(audioBytes)
-		if !ok {
-			writeError(w, http.StatusBadRequest, "有効な音声ファイル（WAV, WebM, OGG, M4A）ではありません")
+	if len(in.audioBytes) > 0 {
+		detectedMime, vErr := validateAndVerifyAudioBytes(in.audioBytes)
+		if vErr != "" {
+			writeError(w, http.StatusBadRequest, vErr)
 			return
 		}
-		if audioMime == "" {
-			audioMime = detectedMime
-		} else {
-			audioMime = sanitizeAudioMime(audioMime)
-		}
+		audioMime = detectedMime
 
-		if len(rawAudioBytes) > 0 {
-			if _, ok := validateAudioMagicBytes(rawAudioBytes); !ok {
-				writeError(w, http.StatusBadRequest, "有効な元音声ファイル（WAV, WebM, OGG, M4A）ではありません")
+		detectedRawMime := ""
+		if len(in.rawAudioBytes) > 0 {
+			var rErr string
+			detectedRawMime, rErr = validateAndVerifyAudioBytes(in.rawAudioBytes)
+			if rErr != "" {
+				writeError(w, http.StatusBadRequest, rErr)
 				return
 			}
 		}
@@ -337,41 +370,41 @@ func (s *Server) handleCreateEntry(w http.ResponseWriter, r *http.Request) {
 		}
 		filename := entryID + extForMime(audioMime)
 		fullPath := filepath.Join(nbDir, filename)
-		if err := os.WriteFile(fullPath, audioBytes, 0644); err != nil {
+		if err := os.WriteFile(fullPath, in.audioBytes, 0644); err != nil {
 			writeError(w, http.StatusInternalServerError, "音声ファイルの保存に失敗しました")
 			return
 		}
 		audioPath = filepath.Join(safeNbID, filename)
 
-		if len(rawAudioBytes) > 0 {
-			rawFilename := entryID + "_raw" + extForMime(audioMime)
+		if len(in.rawAudioBytes) > 0 {
+			rawFilename := entryID + "_raw" + extForMime(detectedRawMime)
 			rawFullPath := filepath.Join(nbDir, rawFilename)
-			if err := os.WriteFile(rawFullPath, rawAudioBytes, 0644); err != nil {
+			if err := os.WriteFile(rawFullPath, in.rawAudioBytes, 0644); err != nil {
 				_ = os.Remove(fullPath)
 				writeError(w, http.StatusInternalServerError, "元音声ファイルの保存に失敗しました")
 				return
 			}
 			rawAudioPath = filepath.Join(safeNbID, rawFilename)
 		}
-	} else {
-		audioMime = ""
 	}
 
-	if trimEndMs == 0 && audioDurationMs > 0 {
-		trimEndMs = trimStartMs + audioDurationMs
+	trimStartMs := in.trimStartMs
+	trimEndMs := in.trimEndMs
+	if trimEndMs == 0 && in.audioDurationMs > 0 {
+		trimEndMs = trimStartMs + in.audioDurationMs
 	}
 
 	newEntry := models.WordEntry{
 		ID:                 entryID,
 		NotebookID:         notebookID,
 		CreatedBy:          uid,
-		Word:               word,
-		Meaning:            meaning,
+		Word:               in.word,
+		Meaning:            in.meaning,
 		AudioPath:          audioPath,
 		RawAudioPath:       rawAudioPath,
 		AudioMime:          audioMime,
-		AudioDurationMs:    audioDurationMs,
-		RawAudioDurationMs: rawAudioDurationMs,
+		AudioDurationMs:    in.audioDurationMs,
+		RawAudioDurationMs: in.rawAudioDurationMs,
 		TrimStartMs:        trimStartMs,
 		TrimEndMs:          trimEndMs,
 		SpokenAt:           spokenAt,
@@ -429,15 +462,12 @@ func (s *Server) handleUpdateEntry(w http.ResponseWriter, r *http.Request) {
 
 	r.Body = http.MaxBytesReader(w, r.Body, maxEntryBodyBytes)
 
-	var req entryJSONRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, "リクエスト形式が不正です")
+	in, status, errMsg := parseEntryRequest(r)
+	if status != 0 {
+		writeError(w, status, errMsg)
 		return
 	}
-
-	word := strings.TrimSpace(req.Word)
-	meaning := strings.TrimSpace(req.Meaning)
-	if word == "" {
+	if in.word == "" {
 		writeError(w, http.StatusBadRequest, "「ことば」を入力してください")
 		return
 	}
@@ -453,35 +483,34 @@ func (s *Server) handleUpdateEntry(w http.ResponseWriter, r *http.Request) {
 	}
 
 	spokenAt := existing.SpokenAt
-	if strings.TrimSpace(req.SpokenAt) != "" {
-		spokenAt = parseSpokenAt(req.SpokenAt)
+	if in.spokenAtRaw != "" {
+		spokenAt = parseSpokenAt(in.spokenAtRaw)
 	}
 
 	updates := map[string]any{
-		"word":      word,
-		"meaning":   meaning,
+		"word":      in.word,
+		"meaning":   in.meaning,
 		"spoken_at": spokenAt,
 	}
 
-	if req.AudioBase64 != "" {
-		decoded, err := base64.StdEncoding.DecodeString(req.AudioBase64)
-		if err != nil {
-			writeError(w, http.StatusBadRequest, "音声データのデコードに失敗しました")
-			return
-		}
-		if len(decoded) > maxAudioBytes {
-			writeError(w, http.StatusRequestEntityTooLarge, "音声ファイルのサイズが大きすぎます（上限20MB）")
-			return
-		}
-		detectedMime, ok := validateAudioMagicBytes(decoded)
-		if !ok {
-			writeError(w, http.StatusBadRequest, "有効な音声ファイル（WAV, WebM, OGG, M4A）ではありません")
+	if len(in.audioBytes) > 0 {
+		detectedMime, vErr := validateAndVerifyAudioBytes(in.audioBytes)
+		if vErr != "" {
+			writeError(w, http.StatusBadRequest, vErr)
 			return
 		}
 		audioMime := detectedMime
-		if req.AudioMime != "" {
-			audioMime = sanitizeAudioMime(req.AudioMime)
+
+		detectedRawMime := ""
+		if len(in.rawAudioBytes) > 0 {
+			var rErr string
+			detectedRawMime, rErr = validateAndVerifyAudioBytes(in.rawAudioBytes)
+			if rErr != "" {
+				writeError(w, http.StatusBadRequest, rErr)
+				return
+			}
 		}
+
 		safeNbID := notebookID
 		nbDir := filepath.Join(s.cfg.AudioDir, safeNbID)
 		if err := os.MkdirAll(nbDir, 0755); err != nil {
@@ -493,47 +522,34 @@ func (s *Server) handleUpdateEntry(w http.ResponseWriter, r *http.Request) {
 		if existing.AudioPath != "" && existing.AudioPath != filepath.Join(safeNbID, filename) {
 			_ = os.Remove(filepath.Join(s.cfg.AudioDir, existing.AudioPath))
 		}
-		if err := os.WriteFile(fullPath, decoded, 0644); err != nil {
+		if err := os.WriteFile(fullPath, in.audioBytes, 0644); err != nil {
 			writeError(w, http.StatusInternalServerError, "音声ファイルの保存に失敗しました")
 			return
 		}
 		updates["audio_path"] = filepath.Join(safeNbID, filename)
 		updates["audio_mime"] = audioMime
-		updates["audio_duration_ms"] = req.AudioDurationMs
-		updates["trim_start_ms"] = req.TrimStartMs
-		if req.TrimEndMs > 0 {
-			updates["trim_end_ms"] = req.TrimEndMs
-		} else if req.AudioDurationMs > 0 {
-			updates["trim_end_ms"] = req.TrimStartMs + req.AudioDurationMs
+		updates["audio_duration_ms"] = in.audioDurationMs
+		updates["trim_start_ms"] = in.trimStartMs
+		if in.trimEndMs > 0 {
+			updates["trim_end_ms"] = in.trimEndMs
+		} else if in.audioDurationMs > 0 {
+			updates["trim_end_ms"] = in.trimStartMs + in.audioDurationMs
 		}
 
-		if req.RawAudioBase64 != "" {
-			rawDecoded, err := base64.StdEncoding.DecodeString(req.RawAudioBase64)
-			if err != nil {
-				writeError(w, http.StatusBadRequest, "元音声データのデコードに失敗しました")
-				return
-			}
-			if len(rawDecoded) > maxAudioBytes {
-				writeError(w, http.StatusRequestEntityTooLarge, "元音声ファイルのサイズが大きすぎます（上限20MB）")
-				return
-			}
-			if _, ok := validateAudioMagicBytes(rawDecoded); !ok {
-				writeError(w, http.StatusBadRequest, "有効な元音声ファイル（WAV, WebM, OGG, M4A）ではありません")
-				return
-			}
-			rawFilename := entryID + "_raw" + extForMime(audioMime)
+		if len(in.rawAudioBytes) > 0 {
+			rawFilename := entryID + "_raw" + extForMime(detectedRawMime)
 			rawFullPath := filepath.Join(nbDir, rawFilename)
 			if existing.RawAudioPath != "" && existing.RawAudioPath != filepath.Join(safeNbID, rawFilename) {
 				_ = os.Remove(filepath.Join(s.cfg.AudioDir, existing.RawAudioPath))
 			}
-			if err := os.WriteFile(rawFullPath, rawDecoded, 0644); err != nil {
+			if err := os.WriteFile(rawFullPath, in.rawAudioBytes, 0644); err != nil {
 				writeError(w, http.StatusInternalServerError, "元音声ファイルの保存に失敗しました")
 				return
 			}
 			updates["raw_audio_path"] = filepath.Join(safeNbID, rawFilename)
-			updates["raw_audio_duration_ms"] = req.RawAudioDurationMs
+			updates["raw_audio_duration_ms"] = in.rawAudioDurationMs
 		}
-	} else if req.RemoveAudio {
+	} else if in.removeAudio {
 		if existing.AudioPath != "" {
 			_ = os.Remove(filepath.Join(s.cfg.AudioDir, existing.AudioPath))
 		}
@@ -668,7 +684,7 @@ func (s *Server) handleGetEntryAudio(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusForbidden, "無効なファイルパスです")
 		return
 	}
-	safeMime := sanitizeAudioMime(existing.AudioMime)
+	safeMime := mimeForPath(existing.AudioPath, existing.AudioMime)
 	w.Header().Set("Content-Type", safeMime)
 	w.Header().Set("X-Content-Type-Options", "nosniff")
 	w.Header().Set("Content-Security-Policy", "default-src 'none'")
@@ -766,7 +782,7 @@ func (s *Server) handleGetEntryRawAudio(w http.ResponseWriter, r *http.Request) 
 		writeError(w, http.StatusForbidden, "無効なファイルパスです")
 		return
 	}
-	safeMime := sanitizeAudioMime(existing.AudioMime)
+	safeMime := mimeForPath(targetPath, existing.AudioMime)
 	w.Header().Set("Content-Type", safeMime)
 	w.Header().Set("X-Content-Type-Options", "nosniff")
 	w.Header().Set("Content-Security-Policy", "default-src 'none'")

@@ -36,7 +36,7 @@ func Open(dbPath string) (*gorm.DB, error) {
 	if dbPath == ":memory:" {
 		dsn = ":memory:?_pragma=foreign_keys(1)"
 	} else {
-		dsn = dbPath + "?_pragma=busy_timeout(5000)&_pragma=journal_mode(WAL)&_pragma=foreign_keys(1)"
+		dsn = dbPath + "?_pragma=busy_timeout(5000)&_pragma=journal_mode(WAL)&_pragma=synchronous(NORMAL)&_pragma=foreign_keys(1)"
 	}
 
 	gormDB, err := gorm.Open(sqlite.Open(dsn), &gorm.Config{

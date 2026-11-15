@@ -422,6 +422,40 @@ class AppNotifier extends Notifier<AppState> {
     }
   }
 
+  Future<WordEntry> createEntry({
+    required String word,
+    required String meaning,
+    required DateTime spokenAt,
+    Uint8List? audioBytes,
+    Uint8List? rawAudioBytes,
+    String audioMime = 'audio/flac',
+    int audioDurationMs = 0,
+    int rawAudioDurationMs = 0,
+    int trimStartMs = 0,
+    int trimEndMs = 0,
+  }) async {
+    final nb = state.currentNotebook;
+    if (nb == null) {
+      throw ApiException('ことば帳が選択されていません');
+    }
+    final created = await api.createEntry(
+      notebookId: nb.id,
+      word: word,
+      meaning: meaning,
+      spokenAt: spokenAt,
+      audioBytes: audioBytes,
+      rawAudioBytes: rawAudioBytes,
+      audioMime: audioMime,
+      audioDurationMs: audioDurationMs,
+      rawAudioDurationMs: rawAudioDurationMs,
+      trimStartMs: trimStartMs,
+      trimEndMs: trimEndMs,
+    );
+    state = state.copyWith(entries: [created, ...state.entries]);
+    unawaited(refreshEntries());
+    return created;
+  }
+
   Future<WordEntry> updateEntry({
     required String entryId,
     required String word,
@@ -429,7 +463,7 @@ class AppNotifier extends Notifier<AppState> {
     required DateTime spokenAt,
     Uint8List? audioBytes,
     Uint8List? rawAudioBytes,
-    String audioMime = 'audio/wav',
+    String audioMime = 'audio/flac',
     int audioDurationMs = 0,
     int rawAudioDurationMs = 0,
     int trimStartMs = 0,
@@ -458,7 +492,10 @@ class AppNotifier extends Notifier<AppState> {
     if (audioBytes != null || removeAudio) {
       await AudioCacheService().evict(nb.id, entryId);
     }
-    await refreshEntries();
+    state = state.copyWith(
+      entries: state.entries.map((e) => e.id == entryId ? updated : e).toList(),
+    );
+    unawaited(refreshEntries());
     return updated;
   }
 

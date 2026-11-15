@@ -33,6 +33,19 @@ func main() {
 		defer sqlDB.Close()
 	}
 
+	if len(os.Args) > 1 && os.Args[1] == "migrate-flac" {
+		dryRun := false
+		for _, arg := range os.Args[2:] {
+			if arg == "--dry-run" || arg == "-n" {
+				dryRun = true
+			}
+		}
+		if _, err := api.MigrateWAVToFLAC(database, dbPath, audioDir, dryRun); err != nil {
+			log.Fatalf("migrate-flac failed: %v", err)
+		}
+		return
+	}
+
 	allowlist := os.Getenv("ALLOWLIST")
 	if allowlist == "" {
 		log.Printf("WARNING: ALLOWLIST is empty; nobody can sign in via OAuth")

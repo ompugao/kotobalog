@@ -224,33 +224,50 @@ class ApiClient {
     required DateTime spokenAt,
     Uint8List? audioBytes,
     Uint8List? rawAudioBytes,
-    String audioMime = 'audio/wav',
+    String audioMime = 'audio/flac',
     int audioDurationMs = 0,
     int rawAudioDurationMs = 0,
     int trimStartMs = 0,
     int trimEndMs = 0,
   }) async {
-    final body = <String, dynamic>{
-      'word': word,
-      'meaning': meaning,
-      'spoken_at': spokenAt.toUtc().toIso8601String(),
-      'audio_duration_ms': audioDurationMs,
-      'trim_start_ms': trimStartMs,
-      'trim_end_ms': trimEndMs,
-    };
+    final req = http.MultipartRequest(
+      'POST',
+      _uri('/api/notebooks/$notebookId/entries'),
+    );
+    if (token != null && token!.isNotEmpty) {
+      req.headers['Authorization'] = 'Bearer $token';
+    }
+    req.fields['word'] = word;
+    req.fields['meaning'] = meaning;
+    req.fields['spoken_at'] = spokenAt.toUtc().toIso8601String();
+    req.fields['audio_duration_ms'] = audioDurationMs.toString();
+    req.fields['trim_start_ms'] = trimStartMs.toString();
+    req.fields['trim_end_ms'] = trimEndMs.toString();
+
+    final ext = audioMime == 'audio/flac' ? 'flac' : 'wav';
     if (audioBytes != null && audioBytes.isNotEmpty) {
-      body['audio_base64'] = base64Encode(audioBytes);
-      body['audio_mime'] = audioMime;
+      req.fields['audio_mime'] = audioMime;
+      req.files.add(
+        http.MultipartFile.fromBytes(
+          'audio',
+          audioBytes,
+          filename: 'audio.$ext',
+        ),
+      );
     }
     if (rawAudioBytes != null && rawAudioBytes.isNotEmpty) {
-      body['raw_audio_base64'] = base64Encode(rawAudioBytes);
-      body['raw_audio_duration_ms'] = rawAudioDurationMs;
+      req.fields['raw_audio_duration_ms'] = rawAudioDurationMs.toString();
+      req.files.add(
+        http.MultipartFile.fromBytes(
+          'raw_audio',
+          rawAudioBytes,
+          filename: 'raw_audio.$ext',
+        ),
+      );
     }
-    final res = await http.post(
-      _uri('/api/notebooks/$notebookId/entries'),
-      headers: _headers(),
-      body: jsonEncode(body),
-    );
+
+    final streamed = await req.send();
+    final res = await http.Response.fromStream(streamed);
     return WordEntry.fromJson(_decodeObj(res));
   }
 
@@ -262,37 +279,54 @@ class ApiClient {
     required DateTime spokenAt,
     Uint8List? audioBytes,
     Uint8List? rawAudioBytes,
-    String audioMime = 'audio/wav',
+    String audioMime = 'audio/flac',
     int audioDurationMs = 0,
     int rawAudioDurationMs = 0,
     int trimStartMs = 0,
     int trimEndMs = 0,
     bool removeAudio = false,
   }) async {
-    final body = <String, dynamic>{
-      'word': word,
-      'meaning': meaning,
-      'spoken_at': spokenAt.toUtc().toIso8601String(),
-      'trim_start_ms': trimStartMs,
-      'trim_end_ms': trimEndMs,
-    };
+    final req = http.MultipartRequest(
+      'PUT',
+      _uri('/api/notebooks/$notebookId/entries/$entryId'),
+    );
+    if (token != null && token!.isNotEmpty) {
+      req.headers['Authorization'] = 'Bearer $token';
+    }
+    req.fields['word'] = word;
+    req.fields['meaning'] = meaning;
+    req.fields['spoken_at'] = spokenAt.toUtc().toIso8601String();
+    req.fields['trim_start_ms'] = trimStartMs.toString();
+    req.fields['trim_end_ms'] = trimEndMs.toString();
+
+    final ext = audioMime == 'audio/flac' ? 'flac' : 'wav';
     if (audioBytes != null && audioBytes.isNotEmpty) {
-      body['audio_base64'] = base64Encode(audioBytes);
-      body['audio_mime'] = audioMime;
-      body['audio_duration_ms'] = audioDurationMs;
+      req.fields['audio_mime'] = audioMime;
+      req.fields['audio_duration_ms'] = audioDurationMs.toString();
+      req.files.add(
+        http.MultipartFile.fromBytes(
+          'audio',
+          audioBytes,
+          filename: 'audio.$ext',
+        ),
+      );
     }
     if (rawAudioBytes != null && rawAudioBytes.isNotEmpty) {
-      body['raw_audio_base64'] = base64Encode(rawAudioBytes);
-      body['raw_audio_duration_ms'] = rawAudioDurationMs;
+      req.fields['raw_audio_duration_ms'] = rawAudioDurationMs.toString();
+      req.files.add(
+        http.MultipartFile.fromBytes(
+          'raw_audio',
+          rawAudioBytes,
+          filename: 'raw_audio.$ext',
+        ),
+      );
     }
     if (removeAudio) {
-      body['remove_audio'] = true;
+      req.fields['remove_audio'] = '1';
     }
-    final res = await http.put(
-      _uri('/api/notebooks/$notebookId/entries/$entryId'),
-      headers: _headers(),
-      body: jsonEncode(body),
-    );
+
+    final streamed = await req.send();
+    final res = await http.Response.fromStream(streamed);
     return WordEntry.fromJson(_decodeObj(res));
   }
 

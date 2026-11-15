@@ -11,6 +11,7 @@ import '../providers/app_state.dart';
 import '../providers/audio_device_provider.dart';
 import '../services/audio_cache_service.dart';
 import '../services/audio_device_service.dart';
+import '../services/flac_codec.dart';
 import '../services/wav_encoder.dart';
 import 'mic_selector_sheet.dart';
 
@@ -54,6 +55,8 @@ class _RecordEntrySheetState extends ConsumerState<RecordEntrySheet> {
 
   // 録音完了後のPCMデータと切り出し範囲（ミリ秒）
   Uint8List? _recordedPcm;
+  int _pcmSampleRate = _sampleRate;
+  int _pcmNumChannels = _numChannels;
   List<double> _waveformPeaks = const [];
   int _totalDurationMs = 0;
   int _trimStartMs = 0;
@@ -227,6 +230,8 @@ class _RecordEntrySheetState extends ConsumerState<RecordEntrySheet> {
         _isRecording = false;
         _isStartingRecorder = false;
         _recordedPcm = rawPcm;
+        _pcmSampleRate = _sampleRate;
+        _pcmNumChannels = _numChannels;
         _rawLoadedFromServer = false;
         _waveformPeaks = peaks;
         _totalDurationMs = durationMs;
@@ -348,7 +353,7 @@ class _RecordEntrySheetState extends ConsumerState<RecordEntrySheet> {
     );
   }
 
-  Uint8List? _buildTrimmedWavBytes() {
+  Uint8List? _buildTrimmedPcmSlice() {
     final pcm = _recordedPcm;
     if (pcm == null || pcm.isEmpty || _trimEndMs <= _trimStartMs) {
       return null;
@@ -357,14 +362,29 @@ class _RecordEntrySheetState extends ConsumerState<RecordEntrySheet> {
       pcm,
       startMs: _trimStartMs,
       endMs: _trimEndMs,
-      sampleRate: _sampleRate,
-      numChannels: _numChannels,
+      sampleRate: _pcmSampleRate,
+      numChannels: _pcmNumChannels,
     );
-    if (sliced.isEmpty) return null;
+    return sliced.isEmpty ? null : sliced;
+  }
+
+  Uint8List? _buildTrimmedWavBytes() {
+    final sliced = _buildTrimmedPcmSlice();
+    if (sliced == null) return null;
     return pcm16ToWav(
       sliced,
-      sampleRate: _sampleRate,
-      numChannels: _numChannels,
+      sampleRate: _pcmSampleRate,
+      numChannels: _pcmNumChannels,
+    );
+  }
+
+  Uint8List? _buildTrimmedFlacBytes() {
+    final sliced = _buildTrimmedPcmSlice();
+    if (sliced == null) return null;
+    return pcm16ToFlac(
+      sliced,
+      sampleRate: _pcmSampleRate,
+      numChannels: _pcmNumChannels,
     );
   }
 
@@ -458,13 +478,13 @@ class _RecordEntrySheetState extends ConsumerState<RecordEntrySheet> {
     return '${sec.toStringAsFixed(1)}秒';
   }
 
-  Uint8List? _buildRawWavBytes() {
+  Uint8List? _buildRawFlacBytes() {
     final pcm = _recordedPcm;
     if (pcm == null || pcm.isEmpty) return null;
-    return pcm16ToWav(
+    return pcm16ToFlac(
       pcm,
-      sampleRate: _sampleRate,
-      numChannels: _numChannels,
+      sampleRate: _pcmSampleRate,
+      numChannels: _pcmNumChannels,
     );
   }
 
@@ -477,7 +497,7 @@ class _RecordEntrySheetState extends ConsumerState<RecordEntrySheet> {
     try {
       final audioBytes = await ref.read(appProvider.notifier).api.getRawAudioBytes(nb.id, existing.id);
       if (audioBytes.isNotEmpty) {
-        final parsed = parseWavPcm16(audioBytes);
+        final parsed = parseAudioPcm16(audioBytes);
         if (parsed != null) {
           final peaks = extractWaveformPeaks(parsed.pcmBytes, barCount: 48);
           final totalMs = parsed.durationMs;
@@ -502,6 +522,8 @@ class _RecordEntrySheetState extends ConsumerState<RecordEntrySheet> {
           if (mounted) {
             setState(() {
               _recordedPcm = parsed.pcmBytes;
+              _pcmSampleRate = parsed.sampleRate;
+              _pcmNumChannels = parsed.numChannels;
               _waveformPeaks = peaks;
               _totalDurationMs = totalMs;
               _trimStartMs = startMs;
@@ -548,11 +570,11 @@ class _RecordEntrySheetState extends ConsumerState<RecordEntrySheet> {
     final nb = ref.read(appProvider).currentNotebook;
     if (nb == null) return;
 
-    final trimmedWav = _buildTrimmedWavBytes();
-    final trimmedMs = trimmedWav != null ? _trimmedDurationMs : 0;
+    final trimmedFlac = _buildTrimmedFlacBytes();
+    final trimmedMs = trimmedFlac != null ? _trimmedDurationMs : 0;
     // サーバー保存済みの元音声は再送しない（新規録音時のみ送る）
-    final rawWav = _rawLoadedFromServer ? null : _buildRawWavBytes();
-    final rawMs = rawWav != null ? _totalDurationMs : 0;
+    final rawFlac = _rawLoadedFromServer ? null : _buildRawFlacBytes();
+    final rawMs = rawFlac != null ? _totalDurationMs : 0;
 
     setState(() => _isSaving = true);
     try {
@@ -560,36 +582,34 @@ class _RecordEntrySheetState extends ConsumerState<RecordEntrySheet> {
       if (_isEditing) {
         final existing = widget.existingEntry!;
         final removeAudio =
-            existing.hasAudio && !_keepExistingAudio && trimmedWav == null;
+            existing.hasAudio && !_keepExistingAudio && trimmedFlac == null;
         await notifier.updateEntry(
           entryId: existing.id,
           word: word,
           meaning: _meaningCtrl.text.trim(),
           spokenAt: _spokenAt,
-          audioBytes: trimmedWav,
-          rawAudioBytes: rawWav,
-          audioMime: 'audio/wav',
+          audioBytes: trimmedFlac,
+          rawAudioBytes: rawFlac,
+          audioMime: 'audio/flac',
           audioDurationMs: trimmedMs,
           rawAudioDurationMs: rawMs,
-          trimStartMs: trimmedWav != null ? _trimStartMs : 0,
-          trimEndMs: trimmedWav != null ? _trimEndMs : 0,
+          trimStartMs: trimmedFlac != null ? _trimStartMs : 0,
+          trimEndMs: trimmedFlac != null ? _trimEndMs : 0,
           removeAudio: removeAudio,
         );
       } else {
-        await notifier.api.createEntry(
-          notebookId: nb.id,
+        await notifier.createEntry(
           word: word,
           meaning: _meaningCtrl.text.trim(),
           spokenAt: _spokenAt,
-          audioBytes: trimmedWav,
-          rawAudioBytes: rawWav,
-          audioMime: 'audio/wav',
+          audioBytes: trimmedFlac,
+          rawAudioBytes: rawFlac,
+          audioMime: 'audio/flac',
           audioDurationMs: trimmedMs,
           rawAudioDurationMs: rawMs,
-          trimStartMs: trimmedWav != null ? _trimStartMs : 0,
-          trimEndMs: trimmedWav != null ? _trimEndMs : 0,
+          trimStartMs: trimmedFlac != null ? _trimStartMs : 0,
+          trimEndMs: trimmedFlac != null ? _trimEndMs : 0,
         );
-        await notifier.refreshEntries();
       }
       if (mounted) Navigator.of(context).pop();
     } catch (e) {
